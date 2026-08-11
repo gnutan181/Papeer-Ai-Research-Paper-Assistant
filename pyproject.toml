@@ -1,0 +1,26 @@
+[project]
+name = "papeer-ai-research-paper-assistant"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "arxiv>=4.0.1",
+    "ipykernel>=7.3.0",
+    "langchain-classic>=1.0.8",
+    "langchain-community>=0.4.2",
+    "langchain-core>=1.5.3",
+    "langchain-groq>=1.1.3",
+    "langchain-qdrant>=1.1.0",
+    "langchain-text-splitters>=1.1.2",
+    "langgraph>=1.2.10",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "langsmith>=0.10.17",
+    "pydantic>=2.13.4",
+    "pymupdf>=1.28.2",
+    "pypdf>=6.15.0",
+    "python-dotenv>=1.2.2",
+    "qdrant-client>=1.19.0",
+    "streamlit>=1.61.1",
+    "tavily-python>=0.7.27",
+]
