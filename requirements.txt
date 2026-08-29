@@ -16,3 +16,4 @@ qdrant-client
 streamlit
 tavily-python
 ipykernel
+deepeval

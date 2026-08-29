@@ -6,13 +6,14 @@ from pathlib import Path
 
 import streamlit as st
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 
 from backend.btw_handler import handle_btw
 from backend.paper_loader import load_arxiv, load_document, load_webpage
 from backend.rag_graph import build_graph
 from backend.vector_store import add_paper, list_papers
-
+from dotenv import load_dotenv
+load_dotenv()
 st.set_page_config(page_title="Papeer", page_icon="📚", layout="centered")
 
 
@@ -22,7 +23,7 @@ def get_graph():
 
 
 SESSIONS_FILE = Path("sessions.json")
-_rename_llm = ChatOpenAI(model="gpt-5-mini")
+_rename_llm = ChatGroq( model="openai/gpt-oss-20b",)
 
 
 def load_sessions() -> dict:

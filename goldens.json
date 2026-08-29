@@ -1,0 +1,10 @@
+[
+  {
+    "input": "Compare Moltbot's technical framework with its security concerns.",
+    "expected_output": "Moltbot’s technical framework is a local‑first, self‑hosted architecture that powers proactive automation and multi‑channel messaging integration. Its rapid, open‑source growth, however, has exposed it to significant security risks—vulnerabilities, trademark disputes, and deployment complexities—that threaten its robustness."
+  },
+  {
+    "input": "Examine how Clawdbot's zero-knowledge design accelerated enterprise uptake.",
+    "expected_output": "Clawdbot’s zero‑knowledge design—built on a privacy‑first architecture—was a key driver of rapid enterprise adoption. By ensuring data never leaves the user’s environment, it addressed the growing demand for secure, compliant solutions, enabling technically sophisticated teams to self‑host and manage security without compromising functionality. This combination of privacy, genuine automation, and a strong developer community accelerated its uptake among enterprises seeking robust, self‑hosted data tools."
+  }
+]

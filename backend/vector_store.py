@@ -17,12 +17,18 @@ EMBEDDING_DIM = 1536  # text-embedding-3-small
 
 # ── Singletons ────────────────────────────────────────────────────────────────
 
-base_embeddings = HuggingFaceEmbeddings(model="text-embedding-3-small")
+# base_embeddings = HuggingFaceEmbeddings(model="BAAI/bge-small-en-v1.5")
+EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+
+base_embeddings = HuggingFaceEmbeddings(
+    model_name=EMBEDDING_MODEL
+)
 embedding_file_store = LocalFileStore("./embedding_cache/")
 embeddings = CacheBackedEmbeddings.from_bytes_store(
     base_embeddings,
     embedding_file_store,
-    namespace=base_embeddings.model,
+    # namespace=base_embeddings.model,
+    namespace=EMBEDDING_MODEL,
     query_embedding_cache=True,
     key_encoder="blake2b",
 )

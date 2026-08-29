@@ -3,15 +3,31 @@ from typing import Generator
 
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from tavily import TavilyClient
 
 from backend.models import BtwRouteDecision
 
 load_dotenv()
 
-llm = ChatOpenAI(model="gpt-5-mini")
+llm = ChatGroq(model="openai/gpt-oss-20b",)
 
+
+# Route → Should this question use web search?
+# Retrieve → If yes, get information from Tavily.
+# Generate + stream → Give the LLM the appropriate context and stream its answer.
+
+# ChatPromptTemplate
+#         +
+# ChatGroq
+#         +
+# with_structured_output()
+#         +
+# invoke()
+#         +
+# stream()
+#         +
+# Generator / yield
 
 def handle_btw(query: str) -> Generator[str, None, None]:
     """Off-topic side channel — never touches the vector store or checkpointer."""
