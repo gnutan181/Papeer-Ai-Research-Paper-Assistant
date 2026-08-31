@@ -4,7 +4,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from langchain_community.document_loaders import PyMuPDFLoader, TextLoader, WebBaseLoader
+from langchain_community.document_loaders import (
+    PyMuPDFLoader,
+    TextLoader,
+    WebBaseLoader,
+)
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -91,7 +95,9 @@ def _load_arxiv_by_id(arxiv_id: str) -> list[Document]:
         docs = PyMuPDFLoader(tmp_path).load()
         if not docs:
             raise ValueError(f"Could not load PDF for ArXiv ID: {arxiv_id}")
-        title = (docs[0].metadata.get("title") or "").strip() or _arxiv_api_lookup(arxiv_id)
+        title = (docs[0].metadata.get("title") or "").strip() or _arxiv_api_lookup(
+            arxiv_id
+        )
         return _stamp_title(_splitter.split_documents(docs), title)
     finally:
         if tmp_path:

@@ -1,11 +1,23 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
+.env
+.env.*
+!.env.example
+.venv/
+**/__pycache__/
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+sessions.json
+embedding_cache/
+eval_results.json
+.pytest_cache/
+.coverage
+htmlcov/
+.streamlit/secrets.toml
+uploads/
+tmp/
+2331771-5d8-e242-628b-d787d67f600d_FTBA_Exercise.xlsx
 build/
 dist/
 wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-.env
+*.egg-info/

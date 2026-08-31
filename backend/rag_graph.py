@@ -1,31 +1,26 @@
-import os
-import sqlite3
-import warnings
 from typing import Annotated
 
-from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import InjectedToolCallId, tool
 from langchain_groq import ChatGroq
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import InjectedState, ToolNode, tools_condition
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
+from backend.config import load_settings
 from backend.models import ClaimVerificationResult, RelevancyDecision, RouterDecision
 from backend.vector_store import search as vs_search
 
-
-load_dotenv()
-
-llm = ChatGroq( model="openai/gpt-oss-20b",)
+settings = load_settings()
+llm = ChatGroq(model=settings.groq_model, api_key=settings.groq_api_key)
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
+
 
 class RAGState(MessagesState):
     session_id: str
@@ -43,29 +38,33 @@ class RAGState(MessagesState):
 
 # ── Router ────────────────────────────────────────────────────────────────────
 
-ROUTER_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        "You are a routing assistant for a research paper Q&A system. "
-        "Classify the user query into exactly one of three categories:\n\n"
-        "  retrieve — Use this for TWO types of questions:\n"
-        "    (a) Questions about the content of uploaded research papers "
-        "(e.g. methods, results, conclusions, authors).\n"
-        "    (b) Questions that require live or current information that cannot be "
-        "answered from general knowledge alone — such as current events, today's weather, "
-        "live prices, recent news, or anything where the answer changes over time "
-        "(e.g. 'Who is the current president?', 'What is the price of gold today?', "
-        "'What is the weather in Delhi?').\n"
-        "  verify_claim — The user wants to check whether a specific claim or finding "
-        "from a paper is still accurate or has been superseded.\n"
-        "  direct_answer — A stable general knowledge question answerable from training data "
-        "with no retrieval needed (e.g. 'What is softmax?', 'Who invented the transformer?', "
-        "'Explain backpropagation.').\n\n"
-        "When in doubt between retrieve and direct_answer, prefer retrieve.\n\n"
-        "Return only the route field.",
-    ),
-    ("human", "{query}"),
-])
+ROUTER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            (
+                "You are a routing assistant for a research paper Q&A system. "
+                "Classify the user query into exactly one of three categories:\n\n"
+                "  retrieve — Use this for TWO types of questions:\n"
+                "    (a) Questions about the content of uploaded research papers "
+                "(e.g. methods, results, conclusions, authors).\n"
+                "    (b) Questions that require live or current information that cannot be "
+                "answered from general knowledge alone — such as current events, today's weather, "
+                "live prices, recent news, or anything where the answer changes over time "
+                "(e.g. 'Who is the current president?', 'What is the price of gold today?', "
+                "'What is the weather in Delhi?').\n"
+                "  verify_claim — The user wants to check whether a specific claim or finding "
+                "from a paper is still accurate or has been superseded.\n"
+                "  direct_answer — A stable general knowledge question answerable from training data "
+                "with no retrieval needed (e.g. 'What is softmax?', 'Who invented the transformer?', "
+                "'Explain backpropagation.').\n\n"
+                "When in doubt between retrieve and direct_answer, prefer retrieve.\n\n"
+                "Return only the route field."
+            ),
+        ),
+        ("human", "{query}"),
+    ]
+)
 
 router_chain = ROUTER_PROMPT | llm.with_structured_output(RouterDecision)
 
@@ -78,17 +77,23 @@ def router_node(state: RAGState) -> dict:
 
 # ── Tool schemas ──────────────────────────────────────────────────────────────
 
+
 class RetrieverInput(BaseModel):
     query: str = Field(description="Semantic query to search research paper chunks")
     k: int = Field(default=4, ge=1, le=10, description="Number of chunks to retrieve")
 
 
 class WebSearchInput(BaseModel):
-    optimized_query: str = Field(description="Query rewritten and optimized for web search")
-    max_results: int = Field(default=3, ge=1, le=10, description="Number of web results to return")
+    optimized_query: str = Field(
+        description="Query rewritten and optimized for web search"
+    )
+    max_results: int = Field(
+        default=3, ge=1, le=10, description="Number of web results to return"
+    )
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
+
 
 @tool(args_schema=RetrieverInput)
 def retrieve_from_vectorstore(
@@ -101,7 +106,12 @@ def retrieve_from_vectorstore(
     """Search the uploaded research paper vector store for relevant passages."""
     docs = vs_search(query=query, session_id=session_id, k=k)
     if not docs:
-        return [ToolMessage(content="No relevant documents found in the vector store.", tool_call_id=tool_call_id)]
+        return [
+            ToolMessage(
+                content="No relevant documents found in the vector store.",
+                tool_call_id=tool_call_id,
+            )
+        ]
     summary = f"Retrieved {len(docs)} chunk(s) from the vector store."
     return [
         ToolMessage(content=summary, tool_call_id=tool_call_id),
@@ -117,7 +127,7 @@ def web_search(
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> list:
     """Search the web for current or supplementary information using Tavily."""
-    client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+    client = TavilyClient(api_key=settings.tavily_api_key)
     results = client.search(optimized_query, max_results=max_results)
     if not results.get("results"):
         return [ToolMessage(content="No web results found.", tool_call_id=tool_call_id)]
@@ -161,8 +171,6 @@ RETRIEVE_SYSTEM = (
 )
 
 
-
-
 # ── Relevancy check ───────────────────────────────────────────────────────────
 
 RELEVANCY_CHECK_SYSTEM = (
@@ -186,6 +194,7 @@ QUERY_REWRITE_SYSTEM = (
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
+
 
 def agent_node(state: RAGState) -> dict:
     current_attempts = state.get("retrieval_attempts", 0)
@@ -212,20 +221,27 @@ def relevancy_check_node(state: RAGState) -> dict:
         f"Question: {query}\n\nRetrieved chunks:\n{doc_snippets}\n\n"
         "Are these chunks relevant to answering the question?"
     )
-    decision: RelevancyDecision = relevancy_llm.invoke([
-        {"role": "system", "content": RELEVANCY_CHECK_SYSTEM},
-        {"role": "user", "content": prompt},
-    ])
+    decision: RelevancyDecision = relevancy_llm.invoke(
+        [
+            {"role": "system", "content": RELEVANCY_CHECK_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
+    )
     return {"is_relevant": decision.is_relevant}
 
 
 def query_rewrite_node(state: RAGState) -> dict:
     original_query = state["query"]
     rewrite_count = state.get("rewrite_count", 0)
-    response = llm.invoke([
-        {"role": "system", "content": QUERY_REWRITE_SYSTEM},
-        {"role": "user", "content": f"Original query: {original_query}\n\nWrite an improved search query."},
-    ])
+    response = llm.invoke(
+        [
+            {"role": "system", "content": QUERY_REWRITE_SYSTEM},
+            {
+                "role": "user",
+                "content": f"Original query: {original_query}\n\nWrite an improved search query.",
+            },
+        ]
+    )
     rewritten = response.content.strip()
     return {
         "messages": [HumanMessage(content=rewritten)],
@@ -255,7 +271,7 @@ verification_llm = llm.with_structured_output(ClaimVerificationResult)
 
 def verify_claim_node(state: RAGState) -> dict:
     claim = state["messages"][-1].content
-    tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+    tavily_client = TavilyClient(api_key=settings.tavily_api_key)
 
     # General web search for recent work superseding the claim
     general_results = tavily_client.search(
@@ -293,9 +309,9 @@ def verify_claim_node(state: RAGState) -> dict:
         f"Claim to verify:\n{claim}\n\n"
         f"Search Results:\n{context}"
     )
-    result: ClaimVerificationResult = verification_llm.invoke([
-        {"role": "user", "content": prompt}
-    ])
+    result: ClaimVerificationResult = verification_llm.invoke(
+        [{"role": "user", "content": prompt}]
+    )
 
     papers_dicts = [p.model_dump() for p in result.superseding_papers[:3]]
     return {
@@ -387,10 +403,12 @@ def after_relevancy_routing(state: RAGState) -> str:
     return "generate_answer"
 
 
-def build_graph(db_path: str = "checkpoints.db"):
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
+def build_graph():
+    """Build an in-memory graph.
 
+    Browser chat history lives only in Streamlit session state, so no user
+    messages survive a server restart or become visible to another visitor.
+    """
     graph = StateGraph(RAGState)
     graph.add_node("router", router_node)
     graph.add_node("agent_node", agent_node)
@@ -433,4 +451,4 @@ def build_graph(db_path: str = "checkpoints.db"):
     graph.add_edge("verify_claim", "generate_answer")
     graph.add_edge("generate_answer", END)
 
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile()
