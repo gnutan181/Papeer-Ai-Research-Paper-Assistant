@@ -13,15 +13,22 @@ load_dotenv()
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
-EMBEDDING_DIM = 1536  # text-embedding-3-small
+# EMBEDDING_DIM = 1536  # text-embedding-3-small
 
-# ── Singletons ────────────────────────────────────────────────────────────────
+# # ── Singletons ────────────────────────────────────────────────────────────────
 
-# base_embeddings = HuggingFaceEmbeddings(model="BAAI/bge-small-en-v1.5")
-EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+# # base_embeddings = HuggingFaceEmbeddings(model="BAAI/bge-small-en-v1.5")
+# EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+
+# base_embeddings = HuggingFaceEmbeddings(
+#     model_name=EMBEDDING_MODEL
+# )
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EMBEDDING_DIM = 384
 
 base_embeddings = HuggingFaceEmbeddings(
-    model_name=EMBEDDING_MODEL
+    model_name=EMBEDDING_MODEL,
+    encode_kwargs={"normalize_embeddings": True},
 )
 embedding_file_store = LocalFileStore("./embedding_cache/")
 embeddings = CacheBackedEmbeddings.from_bytes_store(
