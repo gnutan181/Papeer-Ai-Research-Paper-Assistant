@@ -1,8 +1,14 @@
+import os
 import re
 import tempfile
 import urllib.parse
 import urllib.request
+from hashlib import sha256
 from pathlib import Path
+
+# langchain-community reads this at import time.  Identify the application to
+# sites loaded by users while preserving an explicit deployment override.
+os.environ.setdefault("USER_AGENT", "Papeer/1.0 (+)https://github.com/gnutan181/Papeer-Ai-Research-Paper-Assistant")
 
 from langchain_community.document_loaders import (
     PyMuPDFLoader,
@@ -25,31 +31,77 @@ _md_splitter = RecursiveCharacterTextSplitter.from_language(
 )
 
 
-def _stamp_title(docs: list[Document], title: str) -> list[Document]:
-    for doc in docs:
+def _contextual_chunks(
+    docs: list[Document], title: str, splitter: RecursiveCharacterTextSplitter = _splitter
+) -> list[Document]:
+    """Split source pages while preserving a retrievable parent document.
+
+    Parent text is a page for PDFs (and the source document for web/text).  A
+    page is small enough to safely put back into the answer context, unlike an
+    entire paper, and retains tables/captions that a child chunk may omit.
+    """
+    chunks: list[Document] = []
+    for source_index, parent in enumerate(docs):
+        page_number = parent.metadata.get("page")
+        page_number = page_number + 1 if isinstance(page_number, int) else parent.metadata.get("page_number")
+        parent_id = sha256(
+            f"{title}:{page_number or source_index}:{parent.page_content}".encode()
+        ).hexdigest()
+        children = splitter.split_documents([parent])
+        for child in children:
+            child.metadata.update(
+                {
+                    "title": title,
+                    "page_number": page_number,
+                    "parent_id": parent_id,
+                    "parent_content": parent.page_content,
+                }
+            )
+            # Contextual retrieval improves standalone chunk meaning without
+            # contaminating what is shown to users as the original passage.
+            location = f"page {page_number}" if page_number else "source document"
+            child.metadata["contextual_content"] = (
+                f"Document: {title}\nLocation: {location}\n\n{child.page_content}"
+            )
+            chunks.append(child)
+    return chunks
+
+
+def set_document_title(docs: list[Document], title: str) -> list[Document]:
+    """Apply a user-facing title after a temporary upload path has been used."""
+    for chunk_index, doc in enumerate(docs):
+        page_number = doc.metadata.get("page_number")
+        parent_content = str(doc.metadata.get("parent_content") or doc.page_content)
         doc.metadata["title"] = title
+        doc.metadata["parent_id"] = sha256(
+            f"{title}:{page_number or chunk_index}:{parent_content}".encode()
+        ).hexdigest()
+        location = f"page {page_number}" if page_number else "source document"
+        doc.metadata["contextual_content"] = (
+            f"Document: {title}\nLocation: {location}\n\n{doc.page_content}"
+        )
     return docs
 
 
 def load_pdf(file_path: str) -> list[Document]:
     docs = PyMuPDFLoader(file_path).load()
-    return _stamp_title(_splitter.split_documents(docs), Path(file_path).stem)
+    return _contextual_chunks(docs, Path(file_path).stem)
 
 
 def load_text(file_path: str) -> list[Document]:
     docs = TextLoader(file_path, encoding="utf-8").load()
-    return _stamp_title(_splitter.split_documents(docs), Path(file_path).stem)
+    return _contextual_chunks(docs, Path(file_path).stem)
 
 
 def load_markdown(file_path: str) -> list[Document]:
     docs = TextLoader(file_path, encoding="utf-8").load()
-    return _stamp_title(_md_splitter.split_documents(docs), Path(file_path).stem)
+    return _contextual_chunks(docs, Path(file_path).stem, _md_splitter)
 
 
 def load_webpage(url: str) -> list[Document]:
     docs = WebBaseLoader(url, requests_kwargs={"timeout": 30}).load()
     title = (docs[0].metadata.get("title") or url) if docs else url
-    return _stamp_title(_splitter.split_documents(docs), title)
+    return _contextual_chunks(docs, title)
 
 
 def _extract_arxiv_id(query: str) -> str | None:
@@ -98,7 +150,7 @@ def _load_arxiv_by_id(arxiv_id: str) -> list[Document]:
         title = (docs[0].metadata.get("title") or "").strip() or _arxiv_api_lookup(
             arxiv_id
         )
-        return _stamp_title(_splitter.split_documents(docs), title)
+        return _contextual_chunks(docs, title)
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)

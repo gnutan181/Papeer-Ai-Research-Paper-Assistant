@@ -16,6 +16,18 @@ class RelevancyDecision(BaseModel):
     reason: str
 
 
+class MetadataFilters(BaseModel):
+    """Only explicit user constraints become retrieval filters."""
+
+    document_title: str | None = None
+    source_type: Literal["pdf", "web", "txt", "markdown"] | None = None
+    page_number: int | None = None
+
+
+class QueryVariants(BaseModel):
+    queries: list[str]
+
+
 class SupersedingPaper(BaseModel):
     title: str
     url: str

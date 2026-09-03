@@ -12,7 +12,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from backend.btw_handler import handle_btw
 from backend.config import ConfigurationError, load_settings
-from backend.paper_loader import load_arxiv, load_document, load_webpage
+from backend.paper_loader import (
+    load_arxiv,
+    load_document,
+    load_webpage,
+    set_document_title,
+)
 from backend.rag_graph import build_graph
 from backend.vector_store import (
     add_paper,
@@ -138,8 +143,7 @@ with st.sidebar:
                             temp_path = temporary_file.name
                         docs = load_document(temp_path)
                         title = Path(uploaded_file.name).stem
-                        for document in docs:
-                            document.metadata["title"] = title
+                        set_document_title(docs, title)
                         inserted = _add_documents(
                             docs,
                             document_id_for_bytes(file_bytes),
@@ -293,6 +297,9 @@ if prompt := st.chat_input("Ask about your papers, verify a claim, or search the
                     "answer": None,
                     "is_relevant": None,
                     "rewrite_count": 0,
+                    "search_filters": {},
+                    "search_queries": [],
+                    "web_fallback_attempted": False,
                 }
                 result = graph.invoke(input_state)
                 answer = result.get("answer") or "No response generated."
