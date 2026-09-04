@@ -1,10 +1,10 @@
 [
   {
-    "input": "Compare Moltbot's technical framework with its security concerns.",
-    "expected_output": "Moltbot’s technical framework is a local‑first, self‑hosted architecture that powers proactive automation and multi‑channel messaging integration. Its rapid, open‑source growth, however, has exposed it to significant security risks—vulnerabilities, trademark disputes, and deployment complexities—that threaten its robustness."
+    "input": "Identify primary security risks of Moltbot, including deployment complexity, trademark disputes, and rapid user growth.",
+    "expected_output": "The main security risks for Moltbot stem from its complex deployment process, which can lead to misconfigurations and exposed endpoints; trademark disputes that may force abrupt rebranding or legal action, potentially disrupting service continuity; and its rapid user growth, which increases the attack surface and can overwhelm monitoring and patching efforts."
   },
   {
-    "input": "Examine how Clawdbot's zero-knowledge design accelerated enterprise uptake.",
-    "expected_output": "Clawdbot’s zero‑knowledge design—built on a privacy‑first architecture—was a key driver of rapid enterprise adoption. By ensuring data never leaves the user’s environment, it addressed the growing demand for secure, compliant solutions, enabling technically sophisticated teams to self‑host and manage security without compromising functionality. This combination of privacy, genuine automation, and a strong developer community accelerated its uptake among enterprises seeking robust, self‑hosted data tools."
+    "input": "Identify how Clawdbot’s privacy-first design, user misconfigurations, and architectural flaws jointly contributed to its security vulnerabilities reported 2025‑2026.",
+    "expected_output": "Clawdbot’s privacy‑first architecture—designed to isolate data and minimize external exposure—reduced built‑in safeguards, making the system more fragile to misconfigurations. Users, often technically savvy but not security experts, frequently misconfigured settings (e.g., open ports, weak credentials) that exposed the isolated components. These misconfigurations, combined with architectural flaws such as insufficient input validation and hard‑coded secrets, created exploitable pathways, leading to the security vulnerabilities reported in 2025‑2026."
   }
 ]

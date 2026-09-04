@@ -16,14 +16,14 @@ from dotenv import load_dotenv
 class ConfigurationError(RuntimeError):
     """Raised when the application cannot be started safely."""
 
-
+GROQ_KEY = os.getenv("GROQ_API_KEY", "").strip()
 @dataclass(frozen=True)
 class Settings:
     groq_api_key: str
     qdrant_url: str
     qdrant_api_key: str
     tavily_api_key: str
-    groq_model: str = "openai/gpt-oss-20b"
+    groq_model: str = GROQ_KEY
     qdrant_collection: str = "papeer_chunks_v2"
     portkey_api_key: str = ""
     portkey_provider: str = ""
@@ -51,7 +51,7 @@ def load_settings() -> Settings:
 
     return Settings(
         **values,
-        groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip(),
+        groq_model=os.getenv("GROQ_MODEL", os.getenv("GROQ_MODEL")).strip(),
         portkey_api_key=os.getenv("PORTKEY_API_KEY", "").strip(),
         portkey_provider=os.getenv("PORTKEY_PROVIDER", "").strip(),
         portkey_config=os.getenv("PORTKEY_CONFIG", "").strip(),

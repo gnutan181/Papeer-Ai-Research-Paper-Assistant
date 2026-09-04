@@ -1,363 +1,7 @@
-# import json
-# import sys
-# from pathlib import Path
-# from uuid import uuid4
-
-# sys.stdout.reconfigure(encoding="utf-8")
-# sys.stderr.reconfigure(encoding="utf-8")
-# from deepeval.models.base_model import DeepEvalBaseLLM
-# from langchain_groq import ChatGroq
-# from dotenv import load_dotenv
-# from langchain_core.messages import HumanMessage
-
-# from deepeval import evaluate
-# from deepeval.evaluate import AsyncConfig
-# from deepeval.metrics import (
-#     AnswerRelevancyMetric,
-#     ContextualPrecisionMetric,
-#     ContextualRecallMetric,
-#     ContextualRelevancyMetric,
-#     FaithfulnessMetric,
-# )
-# from deepeval.synthesizer import Synthesizer
-# from deepeval.synthesizer.config import ContextConstructionConfig
-# from deepeval.test_case import LLMTestCase
-
-# from backend.paper_loader import load_document
-# from backend.rag_graph import build_graph
-# from backend.vector_store import add_paper
-
-# load_dotenv()
-
-# BASE_DIR = Path(__file__).resolve().parent
-# PDF_PATH = BASE_DIR / "Openclaw_Research_Report.pdf"
-# GOLDENS_FILE = BASE_DIR / "goldens.json"
-# MAX_CONTEXTS        = 5
-# GOLDENS_PER_CONTEXT = 2
-# METRIC_THRESHOLD    = 0.7
-
-
-# # def generate_goldens() -> list[dict]:
-# #     synthesizer = Synthesizer()
-# #     goldens = synthesizer.generate_goldens_from_docs(
-# #         document_paths=[PDF_PATH],
-# #         include_expected_output=True,
-# #         max_goldens_per_context=GOLDENS_PER_CONTEXT,
-# #         context_construction_config=ContextConstructionConfig(
-# #             max_contexts_per_document=MAX_CONTEXTS,
-# #         ),
-# #     )
-# #     print("goldens",goldens)
-# #     pairs = [
-# #         {"input": g.input, "expected_output": g.expected_output}
-# #         for g in goldens
-# #         if g.input and g.expected_output
-# #     ]
-# #     GOLDENS_FILE.write_text(json.dumps(pairs, indent=2, ensure_ascii=False), encoding="utf-8")
-# #     return pairs
-# class GroqDeepEvalModel(DeepEvalBaseLLM):
-
-#     def __init__(
-#         self,
-#         model_name: str = "openai/gpt-oss-20b",
-#     ):
-#         self.model = ChatGroq(
-#             model=model_name,
-#             temperature=0,
-#         )
-
-#     def load_model(self):
-#         return self.model
-
-#     def generate(self, prompt: str, schema=None):
-
-#         if schema is not None:
-#             structured_model = self.model.with_structured_output(
-#                 schema,
-#                 method="json_schema",
-#             )
-
-#             return structured_model.invoke(prompt)
-
-#         response = self.model.invoke(prompt)
-
-#         return response.content
-
-#     async def a_generate(self, prompt: str, schema=None):
-
-#         if schema is not None:
-#             structured_model = self.model.with_structured_output(
-#                 schema,
-#                 method="json_schema",
-#             )
-
-#             return await structured_model.ainvoke(prompt)
-
-#         response = await self.model.ainvoke(prompt)
-
-#         return response.content
-
-#     def get_model_name(self):
-#         return "Groq openai/gpt-oss-20b"
-# def generate_goldens() -> list[dict]:
-#     # Use your application's working PDF loader.
-#     docs = load_document(str(PDF_PATH))
-
-#     if not docs:
-#         raise RuntimeError(f"No documents extracted from {PDF_PATH}")
-
-#     # Convert LangChain Documents into DeepEval contexts.
-#     # Each context is List[str].
-#     contexts = [
-#         [doc.page_content]
-#         for doc in docs
-#         if doc.page_content and doc.page_content.strip()
-#     ]
-
-#     if not contexts:
-#         raise RuntimeError(
-#             f"No usable text extracted from {PDF_PATH}"
-#         )
-
-#     print(f"Loaded {len(docs)} documents")
-#     print(f"Created {len(contexts)} contexts for DeepEval")
-
-#     # Limit the number of contexts if desired.
-#     contexts = contexts[:MAX_CONTEXTS]
-
-#     synthesizer = Synthesizer(
-#     model=GroqDeepEvalModel(),
-#     max_concurrent=1,
-# )
-
-#     goldens = synthesizer.generate_goldens_from_contexts(
-#         contexts=contexts,
-#         include_expected_output=True,
-#         max_goldens_per_context=GOLDENS_PER_CONTEXT,
-#     )
-
-#     pairs = [
-#         {
-#             "input": g.input,
-#             "expected_output": g.expected_output,
-#         }
-#         for g in goldens
-#         if g.input and g.expected_output
-#     ]
-
-#     if not pairs:
-#         raise RuntimeError(
-#             "DeepEval generated 0 goldens from the extracted contexts."
-#         )
-
-#     GOLDENS_FILE.write_text(
-#         json.dumps(
-#             pairs,
-#             indent=2,
-#             ensure_ascii=False,
-#         ),
-#         encoding="utf-8",
-#     )
-
-#     print(f"Generated {len(pairs)} goldens")
-#     return pairs
-
-# def load_goldens() -> list[dict]:
-#     return json.loads(GOLDENS_FILE.read_text(encoding="utf-8"))
-
-
-# def run_rag_query(graph, query: str, session_id: str) -> tuple[str, list[str]]:
-#     config = {"configurable": {"thread_id": str(session_id)}}
-#     final_state = graph.invoke(
-#         {
-#             "messages": [HumanMessage(content=query)],
-#             "session_id": session_id,
-#             "query": query,
-#             "retrieved_docs": [],
-#             "retrieval_attempts": 0,
-#             "rewrite_count": 0,
-#         },
-#         config=config,
-#     )
-#     answer = final_state.get("answer") or ""
-#     retrieval_context = [doc.page_content for doc in (final_state.get("retrieved_docs") or [])]
-#     return answer, retrieval_context
-
-
-# # def main() -> None:
-# #     pairs = load_goldens() if GOLDENS_FILE.exists() else generate_goldens()
-# #     if not pairs:
-# #         raise RuntimeError(
-# #         "No goldens were generated. "
-# #         "DeepEval could not construct contexts from the PDF."
-# #         )
-
-# #     print(f"Loaded {len(pairs)} golden test cases")
-# #     # docs = load_document(PDF_PATH)
-# #     docs = load_document(str(PDF_PATH))
-# #     graph = build_graph(db_path="eval_checkpoints.db")
-
-# #     metrics = [
-# #         ContextualPrecisionMetric(threshold=METRIC_THRESHOLD, model="gpt-5.4-mini"),
-# #         ContextualRecallMetric(threshold=METRIC_THRESHOLD, model="gpt-5.4-mini"),
-# #         ContextualRelevancyMetric(threshold=METRIC_THRESHOLD, model="gpt-5.4-mini"),
-# #         AnswerRelevancyMetric(threshold=METRIC_THRESHOLD, model="gpt-5.4-mini"),
-# #         FaithfulnessMetric(threshold=METRIC_THRESHOLD, model="gpt-5.4-mini"),
-# #     ]
-
-# #     test_cases = []
-# #     for pair in pairs:
-# #         session_id = f"evaluation_session_{uuid4()}"
-# #         add_paper(docs, session_id)
-
-# #         query = pair["input"] + " as per the report in knowledge base"
-# #         answer, retrieval_context = run_rag_query(graph, query, session_id)
-# #         test_cases.append(
-# #             LLMTestCase(
-# #                 input=pair["input"],
-# #                 actual_output=answer,
-# #                 expected_output=pair["expected_output"],
-# #                 retrieval_context=retrieval_context,
-# #             )
-# #         )
-
-# #     results = evaluate(
-# #         test_cases,
-# #         metrics,
-# #         async_config=AsyncConfig(max_concurrent=3, throttle_value=5),
-# #     )
-
-# #     summary = []
-# #     for test_result in results.test_results:
-# #         summary.append({
-# #             "input": test_result.input,
-# #             "actual_output": test_result.actual_output,
-# #             "success": test_result.success,
-# #             "metrics": [
-# #                 {
-# #                     "name": m.name,
-# #                     "score": m.score,
-# #                     "passed": m.success,
-# #                     "reason": m.reason,
-# #                 }
-# #                 for m in test_result.metrics_data
-# #             ],
-# #         })
-
-# #     results_path = Path("eval_results.json")
-# #     results_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
-# #     print(f"\nResults saved to {results_path}.")
-
-# def main() -> None:
-#     pairs = load_goldens() if GOLDENS_FILE.exists() else generate_goldens()
-
-#     if not pairs:
-#         raise RuntimeError(
-#             "No goldens available for evaluation."
-#         )
-
-#     print(f"Loaded {len(pairs)} golden test cases")
-
-#     docs = load_document(str(PDF_PATH))
-#     graph = build_graph(db_path="eval_checkpoints.db")
-
-#     metrics = [
-#         ContextualPrecisionMetric(
-#             threshold=METRIC_THRESHOLD,
-#             model="gpt-5.4-mini",
-#         ),
-#         ContextualRecallMetric(
-#             threshold=METRIC_THRESHOLD,
-#             model="gpt-5.4-mini",
-#         ),
-#         ContextualRelevancyMetric(
-#             threshold=METRIC_THRESHOLD,
-#             model="gpt-5.4-mini",
-#         ),
-#         AnswerRelevancyMetric(
-#             threshold=METRIC_THRESHOLD,
-#             model="gpt-5.4-mini",
-#         ),
-#         FaithfulnessMetric(
-#             threshold=METRIC_THRESHOLD,
-#             model="gpt-5.4-mini",
-#         ),
-#     ]
-
-#     test_cases = []
-
-#     for pair in pairs:
-#         session_id = f"evaluation_session_{uuid4()}"
-
-#         add_paper(docs, session_id)
-
-#         # Don't modify the synthetic question.
-#         query = pair["input"]
-
-#         answer, retrieval_context = run_rag_query(
-#             graph,
-#             query,
-#             session_id,
-#         )
-
-#         test_cases.append(
-#             LLMTestCase(
-#                 input=pair["input"],
-#                 actual_output=answer,
-#                 expected_output=pair["expected_output"],
-#                 retrieval_context=retrieval_context,
-#             )
-#         )
-
-#     print(f"Created {len(test_cases)} evaluation test cases")
-
-#     results = evaluate(
-#         test_cases,
-#         metrics,
-#         async_config=AsyncConfig(
-#             max_concurrent=3,
-#             throttle_value=5,
-#         ),
-#     )
-
-#     summary = []
-
-#     for test_result in results.test_results:
-#         summary.append(
-#             {
-#                 "input": test_result.input,
-#                 "actual_output": test_result.actual_output,
-#                 "success": test_result.success,
-#                 "metrics": [
-#                     {
-#                         "name": m.name,
-#                         "score": m.score,
-#                         "passed": m.success,
-#                         "reason": m.reason,
-#                     }
-#                     for m in test_result.metrics_data
-#                 ],
-#             }
-#         )
-
-#     results_path = BASE_DIR / "eval_results.json"
-
-#     results_path.write_text(
-#         json.dumps(
-#             summary,
-#             indent=2,
-#             ensure_ascii=False,
-#         ),
-#         encoding="utf-8",
-#     )
-
-#     print(f"\nResults saved to {results_path}.")
-
-# if __name__ == "__main__":
-#     main()
 
 
 import json
+import os
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -377,6 +21,15 @@ sys.stderr.reconfigure(encoding="utf-8")
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# DeepEval wraps an entire metric/test-case attempt in a deadline. Contextual
+# relevancy can require several sequential judge calls, so its default 180-second
+# budget is too small for Gemini on a standard/free service tier. Keep one
+# DeepEval attempt and give that attempt a bounded five-minute allowance.
+# These must be set before DeepEval is imported because its settings are cached.
+os.environ.setdefault("DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE", "600")
+os.environ.setdefault("DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE", "300")
+os.environ.setdefault("DEEPEVAL_RETRY_MAX_ATTEMPTS", "1")
 
 
 # =========================================================
@@ -404,6 +57,7 @@ from deepeval.test_case import LLMTestCase
 # =========================================================
 
 from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 
 
@@ -421,7 +75,7 @@ from backend.vector_store import add_paper
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-
+print(f"Base directory: {BASE_DIR}")
 PDF_PATH = BASE_DIR / "Openclaw_Research_Report.pdf"
 
 GOLDENS_FILE = BASE_DIR / "goldens.json"
@@ -429,7 +83,7 @@ GOLDENS_FILE = BASE_DIR / "goldens.json"
 RESULTS_FILE = BASE_DIR / "eval_results.json"
 
 CHECKPOINT_DB = BASE_DIR / "eval_checkpoints.db"
-
+print(f"Checkpoint database: {CHECKPOINT_DB}")
 
 # =========================================================
 # Evaluation configuration
@@ -446,8 +100,8 @@ GOLDENS_PER_CONTEXT = 1
 METRIC_THRESHOLD = 0.7
 
 # Your Groq model.
-GROQ_MODEL = "openai/gpt-oss-20b"
-
+GROQ_MODEL = "openai/gpt-oss-120b"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
 # Keep concurrency low for the free/on-demand TPM limit.
 SYNTHESIZER_MAX_CONCURRENT = 1
 
@@ -460,89 +114,116 @@ THROTTLE_SECONDS = 10
 # Custom DeepEval model
 # =========================================================
 
-class GroqDeepEvalModel(DeepEvalBaseLLM):
+class GeminiDeepEvalModel(DeepEvalBaseLLM):
     """
-    Custom DeepEval LLM backed by Groq.
-
-    Model:
-        openai/gpt-oss-20b
-
-    Important:
-        DeepEval sometimes passes a Pydantic schema.
-        In that case we MUST use structured output.
-
-        Otherwise GPT-OSS may return plain text and
-        schema.model_validate_json() will fail.
+    Custom DeepEval judge backed by Gemini native structured output.
     """
 
     def __init__(
         self,
-        model_name: str = GROQ_MODEL,
+        model_name: str = GEMINI_MODEL,
     ):
         self.model_name = model_name
 
-        self.model = ChatGroq(
+        self.model = ChatGoogleGenerativeAI(
             model=model_name,
-            temperature=0,
+            # Contextual relevancy is classification, not deep reasoning.
+            thinking_level="minimal",
+            max_tokens=2048,
+            timeout=120,
+            max_retries=1,
         )
 
     def load_model(self):
         return self.model
 
+    # def generate(
+    #     self,
+    #     prompt: str,
+    #     schema=None,
+    # ):
+    #     """
+    #     Synchronous generation.
+
+    #     If DeepEval provides a schema:
+    #         use structured output.
+
+    #     Otherwise:
+    #         return normal text.
+    #     """
+
+    #     if schema is not None:
+    #         structured_model = self.model.with_structured_output(
+    #             schema,
+    #             method="json_schema",
+    #         )
+
+    #         return structured_model.invoke(prompt)
+
+    #     response = self.model.invoke(prompt)
+
+    #     return response.content
+
+    # async def a_generate(
+    #     self,
+    #     prompt: str,
+    #     schema=None,
+    # ):
+    #     """
+    #     Asynchronous generation.
+
+    #     DeepEval's Synthesizer uses this method heavily.
+
+    #     If schema is provided, use Groq structured output.
+    #     """
+
+    #     if schema is not None:
+    #         structured_model = self.model.with_structured_output(
+    #             schema,
+    #             method="json_schema",
+    #         )
+
+    #         return await structured_model.ainvoke(prompt)
+
+    #     response = await self.model.ainvoke(prompt)
+
+    #     return response.content
     def generate(
-        self,
-        prompt: str,
-        schema=None,
-    ):
-        """
-        Synchronous generation.
-
-        If DeepEval provides a schema:
-            use structured output.
-
-        Otherwise:
-            return normal text.
-        """
-
+    self,
+    prompt: str,
+    schema=None,
+):
         if schema is not None:
-            structured_model = self.model.with_structured_output(
-                schema,
-                method="json_schema",
-            )
-
-            return structured_model.invoke(prompt)
-
+               structured_model = self.model.with_structured_output(
+                   schema,
+                   method="json_schema",
+                #    strict=True,
+               )
+       
+               return structured_model.invoke(prompt)
+       
         response = self.model.invoke(prompt)
+        return response.content   
 
-        return response.content
 
     async def a_generate(
-        self,
-        prompt: str,
-        schema=None,
-    ):
-        """
-        Asynchronous generation.
+    self,
+    prompt: str,
+    schema=None,
+):
+     if schema is not None:
+        structured_model = self.model.with_structured_output(
+            schema,
+            method="json_schema",
+            # strict=True,
+        )
 
-        DeepEval's Synthesizer uses this method heavily.
+        return await structured_model.ainvoke(prompt)
 
-        If schema is provided, use Groq structured output.
-        """
-
-        if schema is not None:
-            structured_model = self.model.with_structured_output(
-                schema,
-                method="json_schema",
-            )
-
-            return await structured_model.ainvoke(prompt)
-
-        response = await self.model.ainvoke(prompt)
-
-        return response.content
-
+     response = await self.model.ainvoke(prompt)
+     return response.content
     def get_model_name(self):
-        return f"Groq {self.model_name}"
+        return f"Gemini {self.model_name}"
 
 
 # =========================================================
@@ -628,8 +309,8 @@ def generate_goldens() -> list[dict]:
     # Create DeepEval model
     # -----------------------------------------------------
 
-    deepeval_model = GroqDeepEvalModel(
-        model_name=GROQ_MODEL
+    deepeval_model = GeminiDeepEvalModel(
+        model_name=GEMINI_MODEL
     )
 
     # -----------------------------------------------------
@@ -698,32 +379,85 @@ def generate_goldens() -> list[dict]:
 # Load existing goldens
 # =========================================================
 
-def load_goldens() -> list[dict]:
-    """
-    Load previously generated synthetic test cases.
+# def load_goldens() -> list[dict]:
+#     """
+#     Load previously generated synthetic test cases.
 
-    This prevents DeepEval from regenerating goldens
-    every time evaluate.py is executed.
+#     This prevents DeepEval from regenerating goldens
+#     every time evaluate.py is executed.
+#     """
+
+#     if not GOLDENS_FILE.exists():
+#         raise FileNotFoundError(
+#             f"Goldens file does not exist: {GOLDENS_FILE}"
+#         )
+
+#     pairs = json.loads(
+#         GOLDENS_FILE.read_text(
+#             encoding="utf-8"
+#         )
+#     )
+
+#     if not isinstance(pairs, list):
+#         raise RuntimeError(
+#             "goldens.json must contain a JSON list."
+#         )
+
+#     return pairs
+def load_goldens() -> list[dict] | None:
+    """
+    Load existing goldens.
+
+    Return None when the file is missing, empty,
+    malformed, or contains no usable test cases.
     """
 
     if not GOLDENS_FILE.exists():
-        raise FileNotFoundError(
-            f"Goldens file does not exist: {GOLDENS_FILE}"
+        return None
+
+    raw_content = GOLDENS_FILE.read_text(
+        encoding="utf-8-sig"
+    ).strip()
+
+    if not raw_content:
+        print(
+            f"Warning: {GOLDENS_FILE.name} is empty. "
+            "Goldens will be regenerated."
         )
+        return None
 
-    pairs = json.loads(
-        GOLDENS_FILE.read_text(
-            encoding="utf-8"
+    try:
+        pairs = json.loads(raw_content)
+    except json.JSONDecodeError as error:
+        print(
+            f"Warning: {GOLDENS_FILE.name} contains invalid JSON: "
+            f"{error}. Goldens will be regenerated."
         )
-    )
+        return None
 
-    if not isinstance(pairs, list):
-        raise RuntimeError(
-            "goldens.json must contain a JSON list."
+    if not isinstance(pairs, list) or not pairs:
+        print(
+            f"Warning: {GOLDENS_FILE.name} does not contain "
+            "a non-empty JSON list. Goldens will be regenerated."
         )
+        return None
 
-    return pairs
+    valid_pairs = [
+        pair
+        for pair in pairs
+        if isinstance(pair, dict)
+        and pair.get("input")
+        and pair.get("expected_output")
+    ]
 
+    if not valid_pairs:
+        print(
+            f"Warning: No valid test cases found in "
+            f"{GOLDENS_FILE.name}. Goldens will be regenerated."
+        )
+        return None
+
+    return valid_pairs
 
 # =========================================================
 # Run RAG query
@@ -733,6 +467,7 @@ def run_rag_query(
     graph,
     query: str,
     session_id: str,
+    thread_id: str | None = None,
 ) -> tuple[str, list[str]]:
     """
     Execute one query against the RAG graph.
@@ -745,7 +480,7 @@ def run_rag_query(
 
     config = {
         "configurable": {
-            "thread_id": str(session_id)
+            "thread_id": str(thread_id or session_id)
         }
     }
 
@@ -808,29 +543,39 @@ def create_metrics(
     """
 
     return [
-        ContextualPrecisionMetric(
-            threshold=METRIC_THRESHOLD,
-            model=deepeval_model,
-        ),
+        # ContextualPrecisionMetric(
+        #     threshold=METRIC_THRESHOLD,
+        #     model=deepeval_model,
+        #     include_reason=False,
+        #     async_mode=False,
+        # ),
 
-        ContextualRecallMetric(
-            threshold=METRIC_THRESHOLD,
-            model=deepeval_model,
-        ),
+        # ContextualRecallMetric(
+        #     threshold=METRIC_THRESHOLD,
+        #     model=deepeval_model,
+        #     include_reason=False,
+        #     async_mode=False,
+        # ),
 
-        ContextualRelevancyMetric(
-            threshold=METRIC_THRESHOLD,
-            model=deepeval_model,
-        ),
+        # ContextualRelevancyMetric(
+        #     threshold=METRIC_THRESHOLD,
+        #     model=deepeval_model,
+        #     include_reason=False,
+        #     async_mode=False,
+        # ),
 
         AnswerRelevancyMetric(
             threshold=METRIC_THRESHOLD,
             model=deepeval_model,
+            include_reason=False,
+            async_mode=False,
         ),
 
         FaithfulnessMetric(
             threshold=METRIC_THRESHOLD,
             model=deepeval_model,
+            include_reason=False,
+            async_mode=False,
         ),
     ]
 
@@ -853,6 +598,19 @@ def build_test_cases(
     print("\n" + "=" * 70)
     print("RUNNING RAG TEST CASES")
     print("=" * 70)
+
+    # All goldens query the same PDF corpus. Upload it once per evaluation run.
+    # LangGraph thread IDs remain unique below, so test state cannot leak between
+    # cases even though they share the same Qdrant session partition.
+    corpus_session_id = f"evaluation_corpus_{uuid4()}"
+    print(f"\nIndexing {len(docs)} document chunks once...")
+    add_paper(
+        docs,
+        corpus_session_id,
+        document_id=f"evaluation_{corpus_session_id}",
+        document_title=PDF_PATH.stem,
+    )
+    print("Evaluation corpus indexed")
 
     for index, pair in enumerate(
         pairs,
@@ -885,30 +643,14 @@ def build_test_cases(
             continue
 
         # -------------------------------------------------
-        # Unique RAG session
-        # -------------------------------------------------
-
-        session_id = (
-            f"evaluation_session_{uuid4()}"
-        )
-
-        # -------------------------------------------------
-        # Add paper to vector store
-        # -------------------------------------------------
-
-        add_paper(
-            docs,
-            session_id,
-        )
-
-        # -------------------------------------------------
         # Run RAG
         # -------------------------------------------------
 
         answer, retrieval_context = run_rag_query(
             graph=graph,
             query=query,
-            session_id=session_id,
+            session_id=corpus_session_id,
+            thread_id=f"evaluation_case_{index}_{uuid4()}",
         )
 
         print(
@@ -1062,7 +804,7 @@ def main() -> None:
     print("=" * 70)
 
     print(
-        f"\nEvaluation model: {GROQ_MODEL}"
+        f"\nEvaluation model: {GEMINI_MODEL}"
     )
 
     print(
@@ -1099,10 +841,15 @@ def main() -> None:
         )
 
         pairs = load_goldens()
-
-        print(
-            f"Loaded {len(pairs)} existing goldens"
-        )
+        if pairs is None:
+            print("\nNo valid goldens found.")
+            print("Generating synthetic goldens...")
+            pairs = generate_goldens()
+        else:
+            print(f"\nLoaded {len(pairs)} existing goldens")
+            print(
+                        f"Loaded {len(pairs)} existing goldens"
+                    )
 
     else:
 
@@ -1149,7 +896,7 @@ def main() -> None:
     print("\nBuilding RAG graph...")
 
     graph = build_graph(
-        db_path=str(CHECKPOINT_DB)
+        
     )
 
     print(
@@ -1160,8 +907,8 @@ def main() -> None:
     # 4. Create evaluator model
     # =====================================================
 
-    deepeval_model = GroqDeepEvalModel(
-        model_name=GROQ_MODEL
+    deepeval_model = GeminiDeepEvalModel(
+        model_name=GEMINI_MODEL
     )
 
     # =====================================================
@@ -1216,9 +963,10 @@ def main() -> None:
         metrics,
 
         async_config=AsyncConfig(
-            max_concurrent=EVALUATION_MAX_CONCURRENT,
+            # max_concurrent=EVALUATION_MAX_CONCURRENT,
 
-            throttle_value=THROTTLE_SECONDS,
+            # throttle_value=THROTTLE_SECONDS,
+            run_async=False
         ),
     )
 
@@ -1257,3 +1005,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

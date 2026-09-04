@@ -62,4 +62,5 @@ def make_llm(settings: Settings | None = None) -> BaseChatModel:
 
         # Prefer Portkey gateway retries to avoid multiplying retries.
         max_retries=0,
+        max_tokens=800,
     )
