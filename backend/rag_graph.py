@@ -1,5 +1,3 @@
-
-
 import re
 from typing import Annotated
 
@@ -13,7 +11,6 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
-
 from backend.config import load_settings
 from backend.llm import make_llm
 from backend.models import (
@@ -23,6 +20,7 @@ from backend.models import (
     RelevancyDecision,
     RouterDecision,
 )
+from backend.retrieval.multimodal_store import MultimodalStore
 from backend.vector_store import search_many
 
 settings = load_settings()
@@ -130,7 +128,9 @@ def _unique_queries(queries: list[str]) -> list[str]:
     return unique
 
 
-def _merge_retrieved_docs(current_docs: list, new_docs: list[Document]) -> list[Document]:
+def _merge_retrieved_docs(
+    current_docs: list, new_docs: list[Document]
+) -> list[Document]:
     """Deduplicate and bound context retained in state for answer generation."""
     merged: list[Document] = []
     seen: set[tuple[str, str, str]] = set()
@@ -138,7 +138,12 @@ def _merge_retrieved_docs(current_docs: list, new_docs: list[Document]) -> list[
         metadata = getattr(doc, "metadata", {}) or {}
         content = getattr(doc, "page_content", "").strip()
         key = (
-            str(metadata.get("document_id") or metadata.get("source_url") or metadata.get("document_title") or ""),
+            str(
+                metadata.get("document_id")
+                or metadata.get("source_url")
+                or metadata.get("document_title")
+                or ""
+            ),
             str(metadata.get("page_number") or metadata.get("chunk_id") or ""),
             content,
         )
@@ -164,7 +169,40 @@ def retrieve_from_vectorstore(
     # The LLM selects retrieval depth; query expansion and metadata constraints
     # are produced by dedicated, auditable graph nodes rather than tool prose.
     queries = _unique_queries(search_queries or [query])
-    docs = search_many(queries, session_id=session_id, k=k, filters=search_filters)
+    # New uploads are queried through the named-vector multimodal collection.
+    # A provider/model failure does not strand legacy text-only documents.
+    docs: list[Document] = []
+    try:
+        hits = MultimodalStore(settings).search(queries[0], session_id, limit=k)
+        docs = [
+            Document(
+                page_content=hit.text
+                or "[Visual asset retrieved; caption unavailable.]",
+                metadata={
+                    "document_id": hit.document_id,
+                    "element_id": hit.element_id,
+                    "content_type": hit.content_type,
+                    "page_number": hit.page_number,
+                    "citation_label": hit.citation_label,
+                    "image_key": hit.image_key,
+                    "figure_number": hit.figure_number,
+                    "table_number": hit.table_number,
+                    "section_title": hit.section_title,
+                    "retrieval_sources": hit.retrieval_sources,
+                },
+            )
+            for hit in hits
+        ]
+    except Exception:
+        # Model downloads/Qdrant named-vector availability are optional during
+        # migration. The established text collection remains a safe fallback.
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Multimodal retrieval failed; using legacy text retrieval"
+        )
+    if not docs:
+        docs = search_many(queries, session_id=session_id, k=k, filters=search_filters)
     if not docs:
         return [
             ToolMessage(
@@ -201,7 +239,9 @@ def web_search(
     summary = f"Found {len(web_docs)} web result(s) for: {optimized_query}"
     return [
         ToolMessage(content=summary, tool_call_id=tool_call_id),
-        Command(update={"retrieved_docs": _merge_retrieved_docs(current_docs, web_docs)}),
+        Command(
+            update={"retrieved_docs": _merge_retrieved_docs(current_docs, web_docs)}
+        ),
     ]
 
 
@@ -327,8 +367,7 @@ def self_query_node(state: RAGState) -> dict:
         if not any(marker in error_text for marker in _RECOVERABLE_SELF_QUERY_ERRORS):
             raise
         print(
-            "Warning: metadata extraction failed; "
-            "continuing with unfiltered retrieval."
+            "Warning: metadata extraction failed; continuing with unfiltered retrieval."
         )
         return {"search_filters": {}}
 
@@ -338,7 +377,10 @@ def self_query_node(state: RAGState) -> dict:
 def multi_query_node(state: RAGState) -> dict:
     query = state["query"]
     variants: QueryVariants = multi_query_llm.invoke(
-        [{"role": "system", "content": MULTI_QUERY_SYSTEM}, {"role": "user", "content": query}]
+        [
+            {"role": "system", "content": MULTI_QUERY_SYSTEM},
+            {"role": "user", "content": query},
+        ]
     )
     # Prevent a model response from creating an unbounded retrieval fan-out.
     queries = [query, *variants.queries]
@@ -374,10 +416,7 @@ def agent_node(state: RAGState) -> dict:
     # --------------------------------------------------
     # RETRIEVAL MODE
     # --------------------------------------------------
-    print(
-        f"Agent node: retrieval attempts {current_attempts}, "
-        "using retrieval LLM"
-    )
+    print(f"Agent node: retrieval attempts {current_attempts}, using retrieval LLM")
 
     messages = [
         {
@@ -390,24 +429,19 @@ def agent_node(state: RAGState) -> dict:
 
     tool_calls = getattr(response, "tool_calls", None)
 
-    print(
-        f"Agent node: received response with content length "
-        f"{len(response.content)}"
-    )
+    print(f"Agent node: received response with content length {len(response.content)}")
 
     print(
-        f"Agent node: actual tool calls: {bool(tool_calls)}, "
-        f"tool_calls: {tool_calls}"
+        f"Agent node: actual tool calls: {bool(tool_calls)}, tool_calls: {tool_calls}"
     )
 
-    updates = {
-        "messages": [response]
-    }
+    updates = {"messages": [response]}
 
     if tool_calls:
         updates["retrieval_attempts"] = current_attempts + 1
 
     return updates
+
 
 def relevancy_check_node(state: RAGState) -> dict:
     query = state["query"]
@@ -441,7 +475,9 @@ def query_rewrite_node(state: RAGState) -> dict:
         ]
     )
     rewritten = response.content.strip()
-    retry_local_retrieval = _normalize_query(rewritten) != _normalize_query(original_query)
+    retry_local_retrieval = _normalize_query(rewritten) != _normalize_query(
+        original_query
+    )
     return {
         "messages": [HumanMessage(content=rewritten)],
         "query": rewritten,
@@ -458,7 +494,11 @@ def query_rewrite_node(state: RAGState) -> dict:
 def web_fallback_node(state: RAGState) -> dict:
     """Use the web only after local retrieval and one rewrite fail relevance."""
     query = state["query"]
-    results = TavilyClient(api_key=settings.tavily_api_key).search(query, max_results=4).get("results", [])
+    results = (
+        TavilyClient(api_key=settings.tavily_api_key)
+        .search(query, max_results=4)
+        .get("results", [])
+    )
     docs = [
         Document(
             page_content=str(result.get("content", "")),
@@ -564,7 +604,7 @@ def generate_answer_node(state: RAGState) -> dict:
                 answer = "I don’t have enough trustworthy context to answer that."
             else:
                 context = "\n\n".join(
-                    f"<source id=\"S{i}\" citation=\"{doc.metadata.get('citation_label') or doc.metadata.get('document_title', 'Source')}\">\n"
+                    f'<source id="S{i}" citation="{doc.metadata.get("citation_label") or doc.metadata.get("document_title", "Source")}">\n'
                     f"{doc.page_content}\n</source>"
                     for i, doc in enumerate(docs, start=1)
                 )
@@ -578,7 +618,9 @@ def generate_answer_node(state: RAGState) -> dict:
                 answer = str(llm.invoke([{"role": "user", "content": prompt}]).content)
                 citations = []
                 for i, doc in enumerate(docs, start=1):
-                    label = doc.metadata.get("citation_label") or doc.metadata.get("document_title", "Source")
+                    label = doc.metadata.get("citation_label") or doc.metadata.get(
+                        "document_title", "Source"
+                    )
                     url = doc.metadata.get("source_url")
                     citations.append(f"[S{i}] {label}" + (f" — {url}" if url else ""))
                 answer = f"{answer}\n\n**Sources**\n" + "\n".join(citations)

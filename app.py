@@ -8,10 +8,18 @@ import uuid
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 from langchain_core.messages import AIMessage, HumanMessage
 
+from backend.audio.browser_tts import tts_component_html
+from backend.audio.transcription import (
+    TranscriptionError,
+    normalize_chat_input,
+    transcribe_audio,
+)
 from backend.btw_handler import handle_btw
 from backend.config import ConfigurationError, load_settings
+from backend.ingestion.pipeline import ingest_upload, make_asset_store
 from backend.paper_loader import (
     load_arxiv,
     load_document,
@@ -19,6 +27,7 @@ from backend.paper_loader import (
     set_document_title,
 )
 from backend.rag_graph import build_graph
+from backend.retrieval.multimodal_store import MultimodalStore
 from backend.vector_store import (
     add_paper,
     delete_expired_documents,
@@ -92,8 +101,14 @@ except Exception:
 
 graph = get_graph()
 session_id = st.session_state.session_id
+settings = load_settings()
 
 with st.sidebar:
+    st.session_state.accuracy_stt = st.toggle(
+        "Use accuracy-focused transcription",
+        value=st.session_state.get("accuracy_stt", False),
+        help="Uses Groq whisper-large-v3 instead of the faster turbo model.",
+    )
     if st.button("Clear chat", use_container_width=True):
         st.session_state.chat_history = []
         st.rerun()
@@ -101,6 +116,7 @@ with st.sidebar:
     if st.button("Delete my documents", use_container_width=True, type="secondary"):
         try:
             delete_session_documents(session_id)
+            MultimodalStore(settings).delete_session(session_id)
             st.session_state.chat_history = []
             # A fresh ID prevents any late request from reusing deleted vectors.
             st.session_state.session_id = str(uuid.uuid4())
@@ -128,14 +144,15 @@ with st.sidebar:
             with st.spinner("Processing files…"):
                 for uploaded_file in uploaded_files:
                     file_bytes = uploaded_file.getvalue()
-                    if len(file_bytes) > MAX_FILE_SIZE_BYTES:
-                        st.warning(
-                            f"Skipped {uploaded_file.name}: files must be 10 MB or smaller."
-                        )
-                        continue
                     suffix = Path(uploaded_file.name).suffix.lower()
                     temp_path: str | None = None
                     try:
+                        result = ingest_upload(
+                            uploaded_file.name, file_bytes, session_id, settings
+                        )
+                        MultimodalStore(settings).index(
+                            result.elements, make_asset_store(settings)
+                        )
                         with tempfile.NamedTemporaryFile(
                             delete=False, suffix=suffix
                         ) as temporary_file:
@@ -151,7 +168,16 @@ with st.sidebar:
                             suffix.removeprefix("."),
                         )
                         if inserted:
-                            st.success(f"Added: {uploaded_file.name}")
+                            counts: dict[str, int] = {}
+                            for element in result.elements:
+                                counts[element.content_type] = (
+                                    counts.get(element.content_type, 0) + 1
+                                )
+                            st.success(
+                                f"Added: {uploaded_file.name} ({', '.join(f'{kind}: {count}' for kind, count in counts.items())})"
+                            )
+                            for warning in result.warnings:
+                                st.warning(warning)
                         else:
                             st.info(f"Already loaded: {uploaded_file.name}")
                     except Exception:
@@ -254,6 +280,55 @@ st.divider()
 for message in st.session_state.chat_history:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if message["role"] == "assistant" and settings.enable_browser_tts:
+            components.html(tts_component_html(message["content"]), height=70)
+
+if st.session_state.get("pending_transcript"):
+    st.info("Review the recording transcript before sending it.")
+    edited = st.text_area(
+        "Speech transcript", value=st.session_state.pending_transcript
+    )
+    send, cancel = st.columns(2)
+    if send.button("Send transcript", use_container_width=True):
+        st.session_state.pending_prompt = edited.strip()
+        del st.session_state.pending_transcript
+        st.rerun()
+    if cancel.button("Cancel recording", use_container_width=True):
+        del st.session_state.pending_transcript
+        st.rerun()
+
+_streamlit_chat_input = st.chat_input
+
+
+def _multimodal_chat_input(*_args, **_kwargs):
+    """Use the current Streamlit audio API while retaining the old string path."""
+    value = _streamlit_chat_input(
+        "Type or record your question",
+        accept_audio=settings.enable_audio_input,
+        audio_sample_rate=16000,
+        submit_mode="disable",
+    )
+    if value is None:
+        return st.session_state.pop("pending_prompt", None)
+    typed, audio = normalize_chat_input(value)
+    if audio is None:
+        return typed
+    try:
+        transcript = transcribe_audio(
+            audio.getvalue(),
+            getattr(audio, "name", "recording.webm"),
+            getattr(audio, "type", None),
+            settings,
+            st.session_state.get("accuracy_stt", False),
+        )
+        st.session_state.pending_transcript = transcript.text
+        st.rerun()
+    except (TranscriptionError, ValueError) as exc:
+        st.error(str(exc))
+    return None
+
+
+st.chat_input = _multimodal_chat_input
 
 if prompt := st.chat_input("Ask about your papers, verify a claim, or search the web…"):
     is_btw = prompt.strip().lower().startswith("/btw")
