@@ -8,7 +8,10 @@ from pathlib import Path
 
 # langchain-community reads this at import time.  Identify the application to
 # sites loaded by users while preserving an explicit deployment override.
-os.environ.setdefault("USER_AGENT", "Papeer/1.0 (+)https://github.com/gnutan181/Papeer-Ai-Research-Paper-Assistant")
+os.environ.setdefault(
+    "USER_AGENT",
+    "Papeer/1.0 (+)https://github.com/gnutan181/Papeer-Ai-Research-Paper-Assistant",
+)
 
 from langchain_community.document_loaders import (
     PyMuPDFLoader,
@@ -32,7 +35,9 @@ _md_splitter = RecursiveCharacterTextSplitter.from_language(
 
 
 def _contextual_chunks(
-    docs: list[Document], title: str, splitter: RecursiveCharacterTextSplitter = _splitter
+    docs: list[Document],
+    title: str,
+    splitter: RecursiveCharacterTextSplitter = _splitter,
 ) -> list[Document]:
     """Split source pages while preserving a retrievable parent document.
 
@@ -43,7 +48,11 @@ def _contextual_chunks(
     chunks: list[Document] = []
     for source_index, parent in enumerate(docs):
         page_number = parent.metadata.get("page")
-        page_number = page_number + 1 if isinstance(page_number, int) else parent.metadata.get("page_number")
+        page_number = (
+            page_number + 1
+            if isinstance(page_number, int)
+            else parent.metadata.get("page_number")
+        )
         parent_id = sha256(
             f"{title}:{page_number or source_index}:{parent.page_content}".encode()
         ).hexdigest()

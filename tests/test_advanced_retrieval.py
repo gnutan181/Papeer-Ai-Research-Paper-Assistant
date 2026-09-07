@@ -69,7 +69,9 @@ def test_hybrid_search_returns_parent_page_with_page_citation(monkeypatch):
     monkeypatch.setattr(vector_store, "_get_client", lambda: client)
     monkeypatch.setattr(vector_store, "_get_embeddings", lambda: Embeddings())
     # Isolate fusion/parent behavior from the downloaded model in a unit test.
-    monkeypatch.setattr(vector_store, "_cross_encoder_rerank", lambda _q, docs, _k: docs)
+    monkeypatch.setattr(
+        vector_store, "_cross_encoder_rerank", lambda _q, docs, _k: docs
+    )
 
     results = vector_store.search_many(
         ["How does attention work?", "attention token interactions"],
@@ -79,6 +81,11 @@ def test_hybrid_search_returns_parent_page_with_page_citation(monkeypatch):
     )
 
     assert len(results) == 1
-    assert results[0].page_content == "Full PDF page about attention and token interactions."
+    assert (
+        results[0].page_content
+        == "Full PDF page about attention and token interactions."
+    )
     assert results[0].metadata["citation_label"] == "Transformer study, p. 3"
-    assert all(condition.must[0].match.value == "session-a" for condition in client.filters)
+    assert all(
+        condition.must[0].match.value == "session-a" for condition in client.filters
+    )

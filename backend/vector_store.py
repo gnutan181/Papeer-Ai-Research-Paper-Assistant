@@ -569,11 +569,17 @@ def _metadata_filter(session_id: str, filters: dict[str, Any] | None = None) -> 
     conditions = list(_session_filter(session_id).must or [])
     filters = filters or {}
     if title := filters.get("document_title"):
-        conditions.append(FieldCondition(key="document_title", match=MatchValue(value=title)))
+        conditions.append(
+            FieldCondition(key="document_title", match=MatchValue(value=title))
+        )
     if source_type := filters.get("source_type"):
-        conditions.append(FieldCondition(key="source_type", match=MatchValue(value=source_type)))
+        conditions.append(
+            FieldCondition(key="source_type", match=MatchValue(value=source_type))
+        )
     if page_number := filters.get("page_number"):
-        conditions.append(FieldCondition(key="page_number", match=MatchValue(value=page_number)))
+        conditions.append(
+            FieldCondition(key="page_number", match=MatchValue(value=page_number))
+        )
     return Filter(must=conditions)
 
 
@@ -581,7 +587,11 @@ def _point_to_document(point: Any) -> Document:
     payload = point.payload or {}
     return Document(
         page_content=str(payload.get("content", "")),
-        metadata={key: value for key, value in payload.items() if key not in {"content", "contextual_content"}},
+        metadata={
+            key: value
+            for key, value in payload.items()
+            if key not in {"content", "contextual_content"}
+        },
     )
 
 
@@ -624,7 +634,9 @@ def add_paper(
             uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:{document_id}:{chunk_index}")
         )
         source_url = document.metadata.get("url") or document.metadata.get("source")
-        if not isinstance(source_url, str) or not source_url.startswith(("https://", "http://")):
+        if not isinstance(source_url, str) or not source_url.startswith(
+            ("https://", "http://")
+        ):
             source_url = None
         payload = {
             "content": document.page_content,
@@ -712,7 +724,11 @@ def _lexical_search(
     if not query_terms:
         return []
     documents = [_point_to_document(point) for point in points if point.payload]
-    corpus = [_tokens(str(point.payload.get("contextual_content", ""))) for point in points if point.payload]
+    corpus = [
+        _tokens(str(point.payload.get("contextual_content", "")))
+        for point in points
+        if point.payload
+    ]
     total = len(corpus)
     average_length = sum(map(len, corpus)) / max(total, 1)
     frequencies: dict[str, int] = {}
@@ -728,8 +744,19 @@ def _lexical_search(
         for term in query_terms:
             if not (count := term_counts.get(term)):
                 continue
-            idf = math.log(1 + (total - frequencies.get(term, 0) + 0.5) / (frequencies.get(term, 0) + 0.5))
-            score += idf * (count * 2.0) / (count + 1.2 * (1 - 0.75 + 0.75 * len(terms) / max(average_length, 1)))
+            idf = math.log(
+                1
+                + (total - frequencies.get(term, 0) + 0.5)
+                / (frequencies.get(term, 0) + 0.5)
+            )
+            score += (
+                idf
+                * (count * 2.0)
+                / (
+                    count
+                    + 1.2 * (1 - 0.75 + 0.75 * len(terms) / max(average_length, 1))
+                )
+            )
         if score:
             scored.append((score, index))
     return [documents[index] for _, index in sorted(scored, reverse=True)[:limit]]
@@ -740,17 +767,31 @@ def _rrf(rankings: list[list[Document]], limit: int, k: int = 60) -> list[Docume
     docs: dict[str, Document] = {}
     for ranking in rankings:
         for position, document in enumerate(ranking, start=1):
-            key = str(document.metadata.get("point_id") or document.metadata.get("parent_id") or (document.metadata.get("document_id"), document.metadata.get("chunk_index")))
+            key = str(
+                document.metadata.get("point_id")
+                or document.metadata.get("parent_id")
+                or (
+                    document.metadata.get("document_id"),
+                    document.metadata.get("chunk_index"),
+                )
+            )
             scores[key] = scores.get(key, 0.0) + 1 / (k + position)
             docs[key] = document
-    return [docs[key] for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]]
+    return [
+        docs[key]
+        for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)[
+            :limit
+        ]
+    ]
 
 
 _reranker: Any | None = None
 _reranker_lock = threading.Lock()
 
 
-def _cross_encoder_rerank(query: str, docs: list[Document], limit: int) -> list[Document]:
+def _cross_encoder_rerank(
+    query: str, docs: list[Document], limit: int
+) -> list[Document]:
     """Rerank candidates, degrading safely when model download is unavailable."""
     global _reranker
     if not docs:
@@ -762,7 +803,12 @@ def _cross_encoder_rerank(query: str, docs: list[Document], limit: int) -> list[
 
                 _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
         scores = _reranker.predict([(query, _contextual_content(doc)) for doc in docs])
-        return [doc for _, doc in sorted(zip(scores, docs, strict=True), key=lambda item: item[0], reverse=True)[:limit]]
+        return [
+            doc
+            for _, doc in sorted(
+                zip(scores, docs, strict=True), key=lambda item: item[0], reverse=True
+            )[:limit]
+        ]
     except (ImportError, OSError, RuntimeError, ValueError):
         # Retrieval remains available in restricted/offline deployments.
         return docs[:limit]
@@ -773,7 +819,10 @@ def _parents_for_matches(matches: list[Document], limit: int) -> list[Document]:
     parents: list[Document] = []
     seen: set[str] = set()
     for match in matches:
-        parent_id = str(match.metadata.get("parent_id") or f"{match.metadata.get('document_id')}:{match.metadata.get('chunk_index')}")
+        parent_id = str(
+            match.metadata.get("parent_id")
+            or f"{match.metadata.get('document_id')}:{match.metadata.get('chunk_index')}"
+        )
         if parent_id in seen:
             continue
         seen.add(parent_id)
@@ -795,7 +844,10 @@ def _citation_label(metadata: dict[str, Any]) -> str:
 
 
 def search_many(
-    queries: list[str], session_id: str, k: int = 4, filters: dict[str, Any] | None = None
+    queries: list[str],
+    session_id: str,
+    k: int = 4,
+    filters: dict[str, Any] | None = None,
 ) -> list[Document]:
     """Multi-query hybrid retrieval: dense + BM25 → RRF → cross encoder → parents."""
     _ensure_collection()
@@ -804,7 +856,9 @@ def search_many(
         rankings.append(_dense_search(query, session_id, filters, max(k * 4, 12)))
         rankings.append(_lexical_search(query, session_id, filters, max(k * 4, 12)))
     fused = _rrf(rankings, limit=max(k * 6, 24))
-    return _parents_for_matches(_cross_encoder_rerank(queries[0], fused, max(k * 3, 12)), k)
+    return _parents_for_matches(
+        _cross_encoder_rerank(queries[0], fused, max(k * 3, 12)), k
+    )
 
 
 def search(query: str, session_id: str, k: int = 4) -> list[Document]:

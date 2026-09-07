@@ -41,9 +41,7 @@ def make_llm(settings: Settings | None = None) -> BaseChatModel:
     headers = {
         "x-portkey-api-key": settings.portkey_api_key,
         "x-portkey-provider": provider,
-        "x-portkey-metadata": (
-            '{"_environment":"production","service":"papeer"}'
-        ),
+        "x-portkey-metadata": ('{"_environment":"production","service":"papeer"}'),
     }
 
     if settings.portkey_config:
@@ -51,15 +49,12 @@ def make_llm(settings: Settings | None = None) -> BaseChatModel:
 
     return ChatOpenAI(
         model=settings.groq_model,
-
         # ChatOpenAI requires a key value; Portkey authenticates using its
         # x-portkey-api-key header, not an OpenAI key.
         api_key=settings.portkey_api_key,
-
         base_url=PORTKEY_GATEWAY_URL,
         default_headers=headers,
         timeout=45,
-
         # Prefer Portkey gateway retries to avoid multiplying retries.
         max_retries=0,
         max_tokens=800,

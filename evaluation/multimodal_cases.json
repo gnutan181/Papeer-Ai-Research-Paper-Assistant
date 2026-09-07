@@ -1,0 +1,9 @@
+[
+  {"id":"text-retrieval","question":"What method does the paper propose?","expected_evidence_type":"text","expected_citation":"page"},
+  {"id":"ocr-retrieval","question":"What value appears on the scanned page?","expected_evidence_type":"ocr","expected_citation":"page"},
+  {"id":"table-question","question":"What does Table 2 compare?","expected_evidence_type":"table","expected_citation":"table"},
+  {"id":"figure-retrieval","question":"Which figure illustrates the architecture?","expected_evidence_type":"figure","expected_citation":"figure"},
+  {"id":"chart-understanding","question":"What visible trend is shown in the chart?","expected_evidence_type":"chart","expected_citation":"figure"},
+  {"id":"mixed-evidence","question":"How do the reported table results relate to the chart?","expected_evidence_type":"mixed","expected_citation":"page_and_figure"},
+  {"id":"abstention","question":"What unsupported causal conclusion follows?","expected_evidence_type":"none","expected_citation":"none"}
+]
