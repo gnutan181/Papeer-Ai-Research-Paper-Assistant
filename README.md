@@ -7,13 +7,26 @@ stay available to the answer model.
 
 ## Retrieval pipeline
 
-`query → explicit metadata filters → 3 query variants → dense + BM25 → RRF →
+`query → explicit metadata filters → 3 query variants → legacy dense + BM25 →
+RRF candidates + multimodal candidates → global RRF/deduplication →
 cross-encoder reranking → parent page context → cited answer`
 
 - Child chunks are contextualized with title and page location while the source
   page stays intact as a parent document.
 - All Qdrant reads are filtered by the anonymous browser session. The lexical
   BM25 stage operates only over that same session.
+- The legacy hybrid text path always runs for uploaded-document questions.
+  Multimodal text/visual search is an additional candidate source; a hit in one
+  collection never suppresses the other collection or any query variant.
+- Candidate evidence is normalized, globally fused deterministically,
+  deduplicated by document/page identity, then reranked once. Captions and
+  table text are reranked as text; visual-only evidence retains its fused rank
+  without a fabricated description. Text may fill all requested results when
+  no useful non-text evidence exists.
+- A failure in multimodal retrieval falls back to complete hybrid text
+  retrieval, and a text retrieval failure can still return session-filtered
+  multimodal evidence. If both are empty, the graph continues through its
+  existing abstention and corrective-routing flow.
 - Every grounded answer includes stable `[S#]` citations with PDF page numbers
   or web URLs. It abstains when the retrieved sources cannot support a claim.
 
@@ -70,9 +83,10 @@ flowchart TD
 - Each extracted item uses a stable content hash and a `DocumentElement` schema
   containing page, section, table/figure IDs, bounding box, extraction method,
   and optional asset key. Image bytes are kept out of Qdrant.
-- Tables retain a Markdown form with headers; the retrieval helpers support
-  parent-table expansion. Text and visual ranking are fused deterministically
-  with reciprocal-rank fusion, then deduplicated and modality-balanced.
+- Tables retain a Markdown form with headers. Text and visual candidates are
+  fused deterministically with reciprocal-rank fusion, deduplicated, and
+  globally reranked; multimodal indexing is optional and cannot prevent the
+  reliable text document from being indexed.
 - Streamlit's audio chat input uses Groq Whisper Turbo by default and Whisper
   Large V3 when the accuracy setting is enabled. Recordings are transcribed,
   shown for edit/confirm, and are not retained. The optional Read Answer
