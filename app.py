@@ -19,6 +19,7 @@ from backend.audio.transcription import (
 )
 from backend.btw_handler import handle_btw
 from backend.config import ConfigurationError, load_settings
+from backend.ingestion.indexing import index_uploaded_document
 from backend.ingestion.pipeline import ingest_upload, make_asset_store
 from backend.paper_loader import (
     load_arxiv,
@@ -150,9 +151,6 @@ with st.sidebar:
                         result = ingest_upload(
                             uploaded_file.name, file_bytes, session_id, settings
                         )
-                        MultimodalStore(settings).index(
-                            result.elements, make_asset_store(settings)
-                        )
                         with tempfile.NamedTemporaryFile(
                             delete=False, suffix=suffix
                         ) as temporary_file:
@@ -161,11 +159,15 @@ with st.sidebar:
                         docs = load_document(temp_path)
                         title = Path(uploaded_file.name).stem
                         set_document_title(docs, title)
-                        inserted = _add_documents(
-                            docs,
-                            document_id_for_bytes(file_bytes),
-                            title,
-                            suffix.removeprefix("."),
+                        inserted, multimodal_warning = index_uploaded_document(
+                            docs=docs,
+                            elements=result.elements,
+                            asset_store=make_asset_store(settings),
+                            session_id=st.session_state.session_id,
+                            document_id=document_id_for_bytes(file_bytes),
+                            document_title=title,
+                            source_type=suffix.removeprefix("."),
+                            settings=settings,
                         )
                         if inserted:
                             counts: dict[str, int] = {}
@@ -178,6 +180,8 @@ with st.sidebar:
                             )
                             for warning in result.warnings:
                                 st.warning(warning)
+                            if multimodal_warning:
+                                st.warning(multimodal_warning)
                         else:
                             st.info(f"Already loaded: {uploaded_file.name}")
                     except Exception:
