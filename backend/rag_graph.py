@@ -20,8 +20,7 @@ from backend.models import (
     RelevancyDecision,
     RouterDecision,
 )
-from backend.retrieval.multimodal_store import MultimodalStore
-from backend.vector_store import search_many
+from backend.retrieval.orchestration import retrieve_uploaded_evidence
 
 settings = load_settings()
 llm = make_llm(settings)
@@ -147,7 +146,8 @@ def _merge_retrieved_docs(
             str(metadata.get("page_number") or metadata.get("chunk_id") or ""),
             content,
         )
-        if content and key not in seen:
+        is_visual_only = metadata.get("content_type") in {"figure", "chart", "diagram"}
+        if (content or is_visual_only) and key not in seen:
             merged.append(doc)
             seen.add(key)
         if len(merged) >= MAX_RETRIEVED_DOCS:
@@ -169,40 +169,13 @@ def retrieve_from_vectorstore(
     # The LLM selects retrieval depth; query expansion and metadata constraints
     # are produced by dedicated, auditable graph nodes rather than tool prose.
     queries = _unique_queries(search_queries or [query])
-    # New uploads are queried through the named-vector multimodal collection.
-    # A provider/model failure does not strand legacy text-only documents.
-    docs: list[Document] = []
-    try:
-        hits = MultimodalStore(settings).search(queries[0], session_id, limit=k)
-        docs = [
-            Document(
-                page_content=hit.text
-                or "[Visual asset retrieved; caption unavailable.]",
-                metadata={
-                    "document_id": hit.document_id,
-                    "element_id": hit.element_id,
-                    "content_type": hit.content_type,
-                    "page_number": hit.page_number,
-                    "citation_label": hit.citation_label,
-                    "image_key": hit.image_key,
-                    "figure_number": hit.figure_number,
-                    "table_number": hit.table_number,
-                    "section_title": hit.section_title,
-                    "retrieval_sources": hit.retrieval_sources,
-                },
-            )
-            for hit in hits
-        ]
-    except Exception:
-        # Model downloads/Qdrant named-vector availability are optional during
-        # migration. The established text collection remains a safe fallback.
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "Multimodal retrieval failed; using legacy text retrieval"
-        )
-    if not docs:
-        docs = search_many(queries, session_id=session_id, k=k, filters=search_filters)
+    docs = retrieve_uploaded_evidence(
+        queries,
+        session_id=session_id,
+        settings=settings,
+        k=k,
+        filters=search_filters,
+    )
     if not docs:
         return [
             ToolMessage(
