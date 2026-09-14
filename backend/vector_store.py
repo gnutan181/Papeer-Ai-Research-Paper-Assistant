@@ -1,4 +1,3 @@
-
 """Session-isolated storage in one Qdrant collection.
 
 Qdrant collections are application-level resources, not chat-session resources.
@@ -9,6 +8,7 @@ documents remain isolated and can be removed without retaining user accounts.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 import threading
@@ -33,6 +33,8 @@ from qdrant_client.models import (
 )
 
 from backend.config import Settings, load_settings
+
+logger = logging.getLogger(__name__)
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_DIM = 384
@@ -391,6 +393,35 @@ def _rrf(rankings: list[list[Document]], limit: int, k: int = 60) -> list[Docume
     ]
 
 
+def search_candidates(
+    queries: list[str],
+    session_id: str,
+    k: int = 4,
+    filters: dict[str, Any] | None = None,
+) -> list[Document]:
+    """Return legacy hybrid candidates before global source fusion.
+
+    Each variant/source is isolated so one unavailable embedding, Qdrant call,
+    or lexical scan cannot discard candidates produced by the others.
+    """
+    _ensure_collection()
+    rankings: list[list[Document]] = []
+    for query in dict.fromkeys(q.strip() for q in queries if q.strip()):
+        for source_name, source in (
+            ("dense", _dense_search),
+            ("bm25", _lexical_search),
+        ):
+            try:
+                rankings.append(source(query, session_id, filters, max(k * 4, 12)))
+            except Exception as exc:  # noqa: BLE001 - retrieve from surviving sources.
+                logger.warning(
+                    "Legacy %s retrieval failed for one query variant (%s)",
+                    source_name,
+                    type(exc).__name__,
+                )
+    return _rrf(rankings, limit=max(k * 6, 24))
+
+
 _reranker: Any | None = None
 _reranker_lock = threading.Lock()
 
@@ -418,6 +449,11 @@ def _cross_encoder_rerank(
     except (ImportError, OSError, RuntimeError, ValueError):
         # Retrieval remains available in restricted/offline deployments.
         return docs[:limit]
+
+
+def rerank_documents(query: str, docs: list[Document], limit: int) -> list[Document]:
+    """Public compatibility seam for global retrieval orchestration."""
+    return _cross_encoder_rerank(query, docs, limit)
 
 
 def _parents_for_matches(matches: list[Document], limit: int) -> list[Document]:
@@ -456,12 +492,7 @@ def search_many(
     filters: dict[str, Any] | None = None,
 ) -> list[Document]:
     """Multi-query hybrid retrieval: dense + BM25 → RRF → cross encoder → parents."""
-    _ensure_collection()
-    rankings: list[list[Document]] = []
-    for query in dict.fromkeys(q.strip() for q in queries if q.strip()):
-        rankings.append(_dense_search(query, session_id, filters, max(k * 4, 12)))
-        rankings.append(_lexical_search(query, session_id, filters, max(k * 4, 12)))
-    fused = _rrf(rankings, limit=max(k * 6, 24))
+    fused = search_candidates(queries, session_id, k, filters)
     return _parents_for_matches(
         _cross_encoder_rerank(queries[0], fused, max(k * 3, 12)), k
     )

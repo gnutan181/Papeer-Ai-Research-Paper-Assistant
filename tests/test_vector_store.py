@@ -82,15 +82,29 @@ def test_add_paper_writes_required_payload_and_single_collection(monkeypatch):
     assert payload["expires_at"]
 
 
-def test_search_always_filters_to_the_current_session(monkeypatch):
+def test_search_always_filters_to_current_session_and_explicit_metadata(monkeypatch):
     client = FakeClient()
     _configure(monkeypatch, client)
 
-    vector_store.search("question", session_id="session-a")
+    vector_store.search_many(
+        ["question"],
+        session_id="session-a",
+        filters={
+            "document_title": "A paper",
+            "source_type": "pdf",
+            "page_number": 2,
+        },
+    )
 
-    condition = client.query_filter.must[0]
-    assert condition.key == "session_id"
-    assert condition.match.value == "session-a"
+    conditions = {
+        condition.key: condition.match.value for condition in client.query_filter.must
+    }
+    assert conditions == {
+        "session_id": "session-a",
+        "document_title": "A paper",
+        "source_type": "pdf",
+        "page_number": 2,
+    }
 
 
 def test_document_hash_is_stable_and_content_dependent():

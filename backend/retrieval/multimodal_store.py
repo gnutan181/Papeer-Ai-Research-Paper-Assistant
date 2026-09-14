@@ -18,19 +18,22 @@ from qdrant_client.models import (
 
 from backend.citations.formatter import citation_label
 from backend.config import Settings
-from backend.embeddings.text_embeddings import embed_texts, text_dimension
+from backend.embeddings.text_embeddings import embed_texts
 from backend.embeddings.visual_embeddings import (
     embed_images,
     embed_visual_texts,
-    visual_dimension,
 )
 from backend.ingestion.element_schema import DocumentElement
 from backend.retrieval.fusion import (
     deduplicate_hits,
-    modality_diverse,
     reciprocal_rank_fusion,
 )
 from backend.retrieval.models import RetrievalHit
+
+# These are model architecture dimensions, not probes.  Keeping them static
+# lets an empty/disabled visual collection initialize without loading SigLIP.
+TEXT_VECTOR_DIMENSION = 384
+VISUAL_VECTOR_DIMENSION = 768
 
 
 def session_filter(session_id: str) -> Filter:
@@ -58,10 +61,11 @@ class MultimodalStore:
                 collection_name=name,
                 vectors_config={
                     "text_dense": VectorParams(
-                        size=text_dim or text_dimension(), distance=Distance.COSINE
+                        size=text_dim or TEXT_VECTOR_DIMENSION, distance=Distance.COSINE
                     ),
                     "visual_dense": VectorParams(
-                        size=visual_dim or visual_dimension(), distance=Distance.COSINE
+                        size=visual_dim or VISUAL_VECTOR_DIMENSION,
+                        distance=Distance.COSINE,
                     ),
                 },
             )
@@ -69,7 +73,11 @@ class MultimodalStore:
                 self.client.create_payload_index(name, field, PayloadSchemaType.KEYWORD)
 
     def index(
-        self, elements: list[DocumentElement], asset_store: Any | None = None
+        self,
+        elements: list[DocumentElement],
+        asset_store: Any | None = None,
+        document_title: str | None = None,
+        source_type: str | None = None,
     ) -> None:
         textable = [element for element in elements if element.searchable_text()]
         texts = (
@@ -107,7 +115,11 @@ class MultimodalStore:
                     PointStruct(
                         id=str(uuid.uuid5(uuid.NAMESPACE_URL, element.element_id)),
                         vector=vectors,
-                        payload=element.payload(),
+                        payload={
+                            **element.payload(),
+                            "document_title": document_title or element.source_filename,
+                            "source_type": source_type or element.extraction_method,
+                        },
                     )
                 )
         if points:
@@ -115,14 +127,30 @@ class MultimodalStore:
                 self.settings.multimodal_collection, points=points, wait=True
             )
 
+    def _metadata_filter(
+        self, session_id: str, filters: dict[str, Any] | None = None
+    ) -> Filter:
+        conditions = list(session_filter(session_id).must or [])
+        for field in ("document_title", "source_type", "page_number"):
+            if (value := (filters or {}).get(field)) is not None:
+                conditions.append(
+                    FieldCondition(key=field, match=MatchValue(value=value))
+                )
+        return Filter(must=conditions)
+
     def _query(
-        self, vector: list[float], using: str, session_id: str, limit: int
+        self,
+        vector: list[float],
+        using: str,
+        session_id: str,
+        limit: int,
+        filters: dict[str, Any] | None = None,
     ) -> list[RetrievalHit]:
         response = self.client.query_points(
             collection_name=self.settings.multimodal_collection,
             query=vector,
             using=using,
-            query_filter=session_filter(session_id),
+            query_filter=self._metadata_filter(session_id, filters),
             limit=limit,
             with_payload=True,
         )
@@ -145,23 +173,95 @@ class MultimodalStore:
                     section_title=p.get("section_title"),
                     figure_number=p.get("figure_number"),
                     table_number=p.get("table_number"),
+                    source_filename=p.get("source_filename"),
+                    source_url=p.get("source_url"),
+                    original_ranks={using: index},
+                    original_scores={using: float(getattr(point, "score", 0))},
+                    metadata=dict(p),
                 )
             )
         return result
 
-    def search(self, query: str, session_id: str, limit: int = 6) -> list[RetrievalHit]:
-        rankings = {
-            "text_dense": self._query(
-                embed_texts([query])[0], "text_dense", session_id, limit * 3
-            )
-        }
-        if self.settings.enable_image_embeddings:
-            rankings["visual_dense"] = self._query(
-                embed_visual_texts([query])[0], "visual_dense", session_id, limit * 3
-            )
-        return modality_diverse(
-            deduplicate_hits(reciprocal_rank_fusion(rankings)), limit
+    def _has_visual_elements(
+        self, session_id: str, filters: dict[str, Any] | None = None
+    ) -> bool:
+        """Avoid loading SigLIP when this filtered session has no images."""
+        points, _ = self.client.scroll(
+            collection_name=self.settings.multimodal_collection,
+            scroll_filter=self._metadata_filter(session_id, filters),
+            limit=10_000,
+            with_payload=["image_key"],
+            with_vectors=False,
         )
+        return any(point.payload and point.payload.get("image_key") for point in points)
+
+    def search_many(
+        self,
+        queries: list[str],
+        session_id: str,
+        limit: int = 6,
+        filters: dict[str, Any] | None = None,
+    ) -> list[RetrievalHit]:
+        """Search every query variant and both applicable named vectors."""
+        rankings: dict[str, list[RetrievalHit]] = {}
+        search_visual = False
+        if self.settings.enable_image_embeddings:
+            try:
+                search_visual = self._has_visual_elements(session_id, filters)
+            except Exception as exc:  # noqa: BLE001 - failure must not broaden search.
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Multimodal visual availability check failed (%s)",
+                    type(exc).__name__,
+                )
+        for index, query in enumerate(
+            dict.fromkeys(q.strip() for q in queries if q.strip())
+        ):
+            try:
+                rankings[f"multimodal_text:{index}"] = self._query(
+                    embed_texts([query])[0],
+                    "text_dense",
+                    session_id,
+                    limit * 3,
+                    filters,
+                )
+            except Exception as exc:  # noqa: BLE001 - one source/variant is optional.
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Multimodal text retrieval failed for query variant %d (%s)",
+                    index,
+                    type(exc).__name__,
+                )
+            if search_visual:
+                try:
+                    rankings[f"multimodal_visual:{index}"] = self._query(
+                        embed_visual_texts([query])[0],
+                        "visual_dense",
+                        session_id,
+                        limit * 3,
+                        filters,
+                    )
+                except Exception as exc:  # noqa: BLE001 - visual retrieval is optional.
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "Multimodal visual retrieval failed for query variant %d (%s)",
+                        index,
+                        type(exc).__name__,
+                    )
+        return deduplicate_hits(reciprocal_rank_fusion(rankings))[:limit]
+
+    def search(
+        self,
+        query: str,
+        session_id: str,
+        limit: int = 6,
+        filters: dict[str, Any] | None = None,
+    ) -> list[RetrievalHit]:
+        """Backward-compatible single-query entry point."""
+        return self.search_many([query], session_id, limit, filters)
 
     def delete_session(self, session_id: str) -> None:
         """Erase new-schema vectors for one browser session only."""
