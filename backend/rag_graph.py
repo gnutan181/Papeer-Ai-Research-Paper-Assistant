@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Annotated
 
@@ -28,6 +29,8 @@ from backend.models import (
     RouterDecision,
 )
 from backend.retrieval.orchestration import retrieve_uploaded_evidence
+
+logger = logging.getLogger(__name__)
 
 settings = load_settings()
 llm = make_llm(settings)
@@ -108,6 +111,10 @@ ROUTER_PROMPT = ChatPromptTemplate.from_messages(
                 "  direct_answer — A stable general knowledge question answerable from training data "
                 "with no retrieval needed (e.g. 'What is softmax?', 'Who invented the transformer?', "
                 "'Explain backpropagation.').\n\n"
+                "Papers the user has uploaded in this session: {papers}\n"
+                "If the question is about a concept, model, method or topic that any of "
+                "these papers covers, choose retrieve even if it also looks like general "
+                "knowledge, so the answer is grounded in the user's paper.\n\n"
                 "When in doubt between retrieve and direct_answer, prefer retrieve.\n\n"
                 "Return only the route field."
             ),
@@ -119,9 +126,24 @@ ROUTER_PROMPT = ChatPromptTemplate.from_messages(
 router_chain = ROUTER_PROMPT | llm.with_structured_output(RouterDecision)
 
 
+def _loaded_paper_titles(session_id: str | None) -> str:
+    """Titles in this session for the router; routing still works if lookup fails."""
+    if not session_id:
+        return "(none)"
+    try:
+        from backend.vector_store import list_papers
+
+        titles = list_papers(session_id)
+    except Exception:  # noqa: BLE001 - routing must not fail on a listing error
+        logger.warning("Router could not list session papers", exc_info=True)
+        return "(unknown)"
+    return "; ".join(titles[:20]) if titles else "(none)"
+
+
 def router_node(state: RAGState) -> dict:
     query = state["messages"][-1].content
-    decision: RouterDecision = router_chain.invoke({"query": query})
+    papers = _loaded_paper_titles(state.get("session_id"))
+    decision: RouterDecision = router_chain.invoke({"query": query, "papers": papers})
     return {"route": decision.route}
 
 
