@@ -154,6 +154,23 @@ def _is_transient(exc: Exception) -> bool:
     return "429" in text or "timeout" in text or "timed out" in text
 
 
+# Groq's free tier refills its per-minute token budget over several seconds,
+# so a fixed sub-second retry almost always hits the same 429 again. Honour the
+# server's Retry-After hint, capped so a user never waits too long.
+MIN_RETRY_DELAY_SECONDS = 0.4
+MAX_RETRY_DELAY_SECONDS = 20.0
+
+
+def _retry_delay(exc: Exception) -> float:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    try:
+        hinted = float(headers.get("retry-after", 0))
+    except (TypeError, ValueError):
+        hinted = 0.0
+    return min(max(hinted, MIN_RETRY_DELAY_SECONDS), MAX_RETRY_DELAY_SECONDS)
+
+
 def _is_context_length_error(exc: Exception) -> bool:
     return "context_length_exceeded" in str(exc) or "reduce the length" in str(exc)
 
@@ -189,7 +206,9 @@ class GroqGuardClassifier:
                     raise ContextLengthExceeded("Guardrail window too long.") from exc
                 last_error = exc
                 if attempt == 0 and _is_transient(exc):
-                    time.sleep(0.4)
+                    delay = _retry_delay(exc)
+                    logger.info("Guardrail model busy; retrying in %.1fs.", delay)
+                    time.sleep(delay)
                     continue
                 break
         raise GuardrailError(
