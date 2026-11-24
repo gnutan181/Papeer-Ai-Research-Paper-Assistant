@@ -1,0 +1,46 @@
+# Papeer guardrail flows (Colang 1.0).
+#
+# Every action returns one verdict string: "allow", "injection", "unsafe" or
+# "error". Anything other than "allow" stops the flow, so an unexpected value
+# or a failed action blocks the request (fail closed).
+
+define flow papeer guard
+  if $papeer_scan == "document"
+    $verdict = execute papeer_check_document(text=$user_message)
+  else
+    $verdict = execute papeer_check_user_input(text=$user_message)
+
+  if $verdict == "error"
+    bot inform guardrail unavailable
+    stop
+  if $verdict == "injection"
+    bot refuse prompt injection
+    stop
+  if $verdict != "allow"
+    bot refuse unsafe content
+    stop
+
+define flow papeer output guard
+  $verdict = execute papeer_check_output(text=$bot_message)
+
+  if $verdict == "error"
+    bot inform guardrail unavailable
+    stop
+  if $verdict != "allow"
+    bot refuse unsafe answer
+    stop
+
+# These texts must match the constants in backend/guardrails.py
+# (tests/test_guardrails.py checks that they do).
+
+define bot inform guardrail unavailable
+  "I couldn't complete my safety checks just now, so I haven't answered. Please try again in a moment."
+
+define bot refuse prompt injection
+  "I can't help with that request because it looks like an attempt to override my instructions. Please ask a question about your research papers."
+
+define bot refuse unsafe content
+  "I can't help with that request because it asks for harmful content. I'm happy to help with questions about your research papers."
+
+define bot refuse unsafe answer
+  "I generated an answer that didn't pass my safety check, so I've withheld it. Please try rephrasing your question."

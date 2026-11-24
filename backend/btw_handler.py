@@ -1,10 +1,16 @@
 from collections.abc import Generator
 
+from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 from tavily import TavilyClient
 
 from backend.config import load_settings
+from backend.guardrails import (
+    RETRY_MESSAGE,
+    filter_untrusted_documents,
+    guard_input,
+)
 from backend.models import BtwRouteDecision
 
 settings = load_settings()
@@ -30,6 +36,12 @@ llm = ChatGroq(model=settings.groq_model, api_key=settings.groq_api_key)
 
 def handle_btw(query: str) -> Generator[str, None, None]:
     """Off-topic side channel — never touches the vector store or checkpointer."""
+    # Same input rail as the main graph: block before any LLM or web call.
+    verdict = guard_input(query, settings)
+    if not verdict.allowed:
+        yield verdict.message
+        return
+
     route_prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -48,9 +60,20 @@ def handle_btw(query: str) -> Generator[str, None, None]:
 
     if decision.needs_web_search:
         client = TavilyClient(api_key=settings.tavily_api_key)
-        results = client.search(query, max_results=3)
-        context = "\n\n".join(r["content"] for r in results["results"])
-        sources = "\n".join(f"- {r['url']}" for r in results["results"])
+        results = client.search(query, max_results=3).get("results", [])
+        # Retrieval rail: drop web results carrying injected instructions.
+        screened = filter_untrusted_documents(
+            [
+                Document(page_content=r["content"], metadata={"source_url": r["url"]})
+                for r in results
+            ],
+            settings,
+        )
+        if screened.error:
+            yield RETRY_MESSAGE
+            return
+        context = "\n\n".join(doc.page_content for doc in screened.kept)
+        sources = "\n".join(f"- {doc.metadata['source_url']}" for doc in screened.kept)
 
         answer_prompt = ChatPromptTemplate.from_messages(
             [

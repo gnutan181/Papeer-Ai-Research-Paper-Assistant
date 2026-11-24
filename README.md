@@ -37,6 +37,56 @@ uses Tavily as a bounded web fallback. Source text is explicitly isolated as
 untrusted data in the answer prompt, preventing document-embedded instructions
 from controlling tool use or the assistant.
 
+## Guardrails
+
+Papeer runs a layered, fail-closed guardrail pipeline built with
+[NVIDIA NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails). The rails
+live in `guardrails/` (`config.yml`, `rails.co`, and the custom actions in
+`actions.py`); `backend/guardrails.py` calls the Groq-hosted safety models and
+exposes the rails to the LangGraph graph, which stays the main workflow.
+
+| Point | What runs | On a hit |
+| --- | --- | --- |
+| Input (new `input_guard` node, before the router; also `/btw`) | Llama Prompt Guard 2 (injection / jailbreak) and `gpt-oss-safeguard-20b` (unsafe content), in parallel | Polite refusal; no router, retrieval, Tavily or LLM call runs |
+| Retrieval (inside the retrieval tool, `web_search`, `web_fallback` and claim verification) | Prompt Guard 2 on every chunk and Tavily result, split into overlapping windows that fit its 512-token limit | Chunk dropped and its source logged; the existing relevance grading, rewrite, web fallback and abstention handle what remains |
+| Output (`generate_answer`) | `validate_citations()` removes citations that do not match retrieved evidence, then `gpt-oss-safeguard-20b` checks the answer | Answer withheld |
+
+Llama Guard 4 was the original choice for content safety, but Groq
+decommissioned `meta-llama/llama-guard-4-12b` on 5 March 2026 and recommends
+`openai/gpt-oss-safeguard-20b`, which classifies against the policy in
+`backend/guardrails.py`.
+
+Every rail fails closed: a timeout, provider error or unreadable verdict blocks
+the request with "please try again". Each call has a timeout and one retry on
+429 / 5xx / timeouts. Logs contain verdicts, scores and source names, never the
+question, document text or keys (NeMo's own text-bearing INFO logs are muted).
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `GUARDRAILS_ENABLED` | `true` | One switch for all rails and citation validation; `false` restores the previous behaviour for local debugging |
+| `GUARDRAIL_INJECTION_THRESHOLD` | `0.8` | Prompt Guard 2 score at or above which text is treated as an injection |
+| `GUARDRAIL_TIMEOUT_SECONDS` | `10` | Per-call timeout for the guardrail models |
+| `PROMPT_GUARD_MODEL` | `meta-llama/llama-prompt-guard-2-86m` | Injection / jailbreak classifier |
+| `SAFETY_GUARD_MODEL` | `openai/gpt-oss-safeguard-20b` | Content-safety classifier |
+
+On Groq's free tier `gpt-oss-safeguard-20b` is limited to 3 requests and 2,000
+tokens per minute, roughly one to two questions a minute with input and
+output checks. Use a paid tier for real traffic; otherwise the rails fail
+closed and users see "please try again".
+
+Evaluate the rails against the live models with:
+
+```powershell
+uv run python eval/run_guardrail_eval.py
+```
+
+It runs the 60 labelled cases in `eval/guardrail_cases.jsonl` (research
+questions, direct injections, jailbreaks, unsafe requests, poisoned and clean
+documents) through the graph's input and retrieval rails, prints the block
+rate on harmful cases, the false-block rate on safe cases and the added
+latency, and writes `eval/guardrail_results.json`. `--pace` spaces questions
+to respect the safety model's rate limit.
+
 ## Portkey routing
 
 Set `PORTKEY_API_KEY` to send every LLM call (router, retrieval expansion,

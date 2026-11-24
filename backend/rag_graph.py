@@ -11,7 +11,14 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
+from backend.citations.formatter import validate_citations
 from backend.config import load_settings
+from backend.guardrails import (
+    RETRY_MESSAGE,
+    filter_untrusted_documents,
+    guard_input,
+    guard_output,
+)
 from backend.llm import make_llm
 from backend.models import (
     ClaimVerificationResult,
@@ -45,6 +52,38 @@ class RAGState(MessagesState):
     search_queries: list[str]
     retry_local_retrieval: bool
     web_fallback_attempted: bool
+    guardrail_message: str | None
+
+
+# ── Guardrails ────────────────────────────────────────────────────────────────
+
+
+def input_guard_node(state: RAGState) -> dict:
+    """Input rail: block injections and unsafe requests before any LLM call."""
+    query = state["messages"][-1].content
+    result = guard_input(str(query), settings)
+    if result.allowed:
+        return {"guardrail_message": None}
+    return {
+        "guardrail_message": result.message,
+        "answer": result.message,
+        "messages": [AIMessage(content=result.message)],
+    }
+
+
+def after_input_guard(state: RAGState) -> str:
+    return "blocked" if state.get("guardrail_message") else "allowed"
+
+
+def _screen_documents(docs: list[Document]) -> tuple[list[Document], dict]:
+    """Retrieval rail: drop chunks flagged as indirect prompt injection.
+
+    A guardrail failure blocks the whole request (fail closed) by setting
+    ``guardrail_message``, which routes straight to the final answer.
+    """
+    result = filter_untrusted_documents(docs, settings)
+    update = {"guardrail_message": RETRY_MESSAGE} if result.error else {}
+    return result.kept, update
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -183,10 +222,24 @@ def retrieve_from_vectorstore(
                 tool_call_id=tool_call_id,
             )
         ]
+    docs, guard_update = _screen_documents(docs)
+    if not docs:
+        return [
+            ToolMessage(
+                content="No trustworthy documents found in the vector store.",
+                tool_call_id=tool_call_id,
+            ),
+            *([Command(update=guard_update)] if guard_update else []),
+        ]
     summary = f"Retrieved {len(docs)} chunk(s) from the vector store."
     return [
         ToolMessage(content=summary, tool_call_id=tool_call_id),
-        Command(update={"retrieved_docs": _merge_retrieved_docs(current_docs, docs)}),
+        Command(
+            update={
+                "retrieved_docs": _merge_retrieved_docs(current_docs, docs),
+                **guard_update,
+            }
+        ),
     ]
 
 
@@ -209,11 +262,22 @@ def web_search(
         )
         for r in results["results"]
     ]
+    web_docs, guard_update = _screen_documents(web_docs)
+    if not web_docs:
+        return [
+            ToolMessage(
+                content="No trustworthy web results found.", tool_call_id=tool_call_id
+            ),
+            *([Command(update=guard_update)] if guard_update else []),
+        ]
     summary = f"Found {len(web_docs)} web result(s) for: {optimized_query}"
     return [
         ToolMessage(content=summary, tool_call_id=tool_call_id),
         Command(
-            update={"retrieved_docs": _merge_retrieved_docs(current_docs, web_docs)}
+            update={
+                "retrieved_docs": _merge_retrieved_docs(current_docs, web_docs),
+                **guard_update,
+            }
         ),
     ]
 
@@ -417,6 +481,8 @@ def agent_node(state: RAGState) -> dict:
 
 
 def relevancy_check_node(state: RAGState) -> dict:
+    if state.get("guardrail_message"):
+        return {}
     query = state["query"]
     docs = state.get("retrieved_docs") or []
     doc_snippets = "\n\n---\n\n".join(doc.page_content[:300] for doc in docs[:3])
@@ -485,10 +551,12 @@ def web_fallback_node(state: RAGState) -> dict:
         for result in results
         if result.get("content") and result.get("url")
     ]
+    docs, guard_update = _screen_documents(docs)
     return {
         "retrieved_docs": _merge_retrieved_docs([], docs),
         "web_fallback_attempted": True,
         "is_relevant": None,
+        **guard_update,
     }
 
 
@@ -508,6 +576,29 @@ CLAIM_ANALYSIS_PROMPT = (
 verification_llm = llm.with_structured_output(ClaimVerificationResult)
 
 
+def _screen_tavily_results(
+    general_results: list[dict], arxiv_results: list[dict]
+) -> tuple[list[dict], list[dict], dict]:
+    """Scan exactly the snippet text that the verification prompt will use."""
+    tagged = [("general", r) for r in general_results] + [
+        ("arxiv", r) for r in arxiv_results
+    ]
+    docs = [
+        Document(
+            page_content=str(r.get("content", ""))[:300],
+            metadata={"source_url": r.get("url"), "index": i},
+        )
+        for i, (_group, r) in enumerate(tagged)
+    ]
+    kept, guard_update = _screen_documents(docs)
+    kept_ids = {doc.metadata["index"] for doc in kept}
+    general, arxiv = [], []
+    for i, (group, r) in enumerate(tagged):
+        if i in kept_ids:
+            (general if group == "general" else arxiv).append(r)
+    return general, arxiv, guard_update
+
+
 def verify_claim_node(state: RAGState) -> dict:
     claim = state["messages"][-1].content
     tavily_client = TavilyClient(api_key=settings.tavily_api_key)
@@ -523,6 +614,13 @@ def verify_claim_node(state: RAGState) -> dict:
         f"site:arxiv.org {claim[:200]}",
         max_results=5,
     ).get("results", [])
+
+    # Retrieval rail: Tavily snippets reach the verification prompt.
+    general_results, arxiv_results, guard_update = _screen_tavily_results(
+        general_results, arxiv_results
+    )
+    if guard_update:
+        return guard_update
 
     # Build context block
     lines = ["=== General Web Search Results ==="]
@@ -564,6 +662,14 @@ def generate_answer_node(state: RAGState) -> dict:
     route = state.get("route")
     query = state["query"]
 
+    # A retrieval-rail failure blocks the request (fail closed).
+    if state.get("guardrail_message"):
+        answer = state["guardrail_message"]
+        return {"answer": answer, "messages": [AIMessage(content=answer)]}
+
+    # Only model-written answers go through the output rail.
+    llm_generated = route in {"verify_claim", "direct_answer"}
+
     if route == "retrieve":
         if state.get("is_relevant") is False and state.get("rewrite_count", 0) >= 1:
             answer = (
@@ -589,6 +695,14 @@ def generate_answer_node(state: RAGState) -> dict:
                     f"{context}\n\nQuestion: {query}"
                 )
                 answer = str(llm.invoke([{"role": "user", "content": prompt}]).content)
+                llm_generated = True
+                if settings.guardrails_enabled:
+                    # Remove citations that do not point at retrieved evidence.
+                    evidence = [
+                        {**doc.metadata, "citation_id": f"S{i}"}
+                        for i, doc in enumerate(docs, start=1)
+                    ]
+                    answer, _ = validate_citations(answer, evidence)
                 citations = []
                 for i, doc in enumerate(docs, start=1):
                     label = doc.metadata.get("citation_label") or doc.metadata.get(
@@ -628,6 +742,11 @@ def generate_answer_node(state: RAGState) -> dict:
         prompt = f"Answer from your knowledge.\n\nQuestion: {query}"
         answer = llm.invoke([{"role": "user", "content": prompt}]).content
 
+    if llm_generated:
+        verdict = guard_output(str(answer), settings)
+        if not verdict.allowed:
+            answer = verdict.message
+
     return {"answer": answer, "messages": [AIMessage(content=answer)]}
 
 
@@ -653,6 +772,8 @@ def agent_routing(state: RAGState) -> str:
 
 
 def after_relevancy_routing(state: RAGState) -> str:
+    if state.get("guardrail_message"):
+        return "generate_answer"
     if state.get("is_relevant", False):
         return "generate_answer"
     if state.get("rewrite_count", 0) < 1:
@@ -676,6 +797,7 @@ def build_graph():
     messages survive a server restart or become visible to another visitor.
     """
     graph = StateGraph(RAGState)
+    graph.add_node("input_guard", input_guard_node)
     graph.add_node("router", router_node)
     graph.add_node("self_query", self_query_node)
     graph.add_node("multi_query", multi_query_node)
@@ -687,7 +809,12 @@ def build_graph():
     graph.add_node("verify_claim", verify_claim_node)
     graph.add_node("generate_answer", generate_answer_node)
 
-    graph.set_entry_point("router")
+    graph.set_entry_point("input_guard")
+    graph.add_conditional_edges(
+        "input_guard",
+        after_input_guard,
+        {"blocked": END, "allowed": "router"},
+    )
 
     graph.add_conditional_edges(
         "router",

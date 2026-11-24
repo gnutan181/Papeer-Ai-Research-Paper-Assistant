@@ -28,6 +28,7 @@ dependencies = [
     "streamlit>=1.61.1",
     "tavily-python>=0.7.27",
     "torchvision>=0.29.0",
+    "nemoguardrails>=0.25,<0.26",
 ]
 
 [dependency-groups]

@@ -1,0 +1,25 @@
+# NeMo Guardrails configuration for Papeer.
+#
+# LangGraph stays the main workflow. backend/guardrails.py loads this config
+# and calls NeMo's check API at three points of the graph:
+#   input      - the user's question, before the router
+#   retrieval  - every retrieved chunk and Tavily result, before the answer prompt
+#   output     - the final answer
+#
+# No main LLM is configured: these rails only execute the custom actions in
+# actions.py (Groq-hosted Llama Prompt Guard 2 and gpt-oss-safeguard-20b), so
+# NeMo never makes a generation call of its own.
+#
+# NeMo's built-in `rails.retrieval` section only runs inside a NeMo-driven
+# generation, which Papeer does not use. The retrieval rail is therefore an
+# input-type flow that runs when the caller sets the `papeer_scan` context
+# variable to "document" (see rails.co).
+colang_version: "1.0"
+
+rails:
+  input:
+    flows:
+      - papeer guard
+  output:
+    flows:
+      - papeer output guard

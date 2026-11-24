@@ -19,6 +19,13 @@ def _flag(value: str | bool | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _threshold(value: str) -> float:
+    threshold = float(value)
+    if not 0.0 < threshold <= 1.0:
+        raise ValueError("GUARDRAIL_INJECTION_THRESHOLD must be in (0, 1].")
+    return threshold
+
+
 @dataclass(frozen=True)
 class Settings:
     """Settings model; the four leading fields retain legacy positional use."""
@@ -51,6 +58,11 @@ class Settings:
     max_audio_size_mb: int = 10
     max_urls_per_request: int = 5
     debug: bool = False
+    guardrails_enabled: bool = True
+    guardrail_injection_threshold: float = 0.8
+    guardrail_timeout_seconds: float = 10.0
+    prompt_guard_model: str = "meta-llama/llama-prompt-guard-2-86m"
+    safety_guard_model: str = "openai/gpt-oss-safeguard-20b"
 
     @property
     def max_file_size_bytes(self) -> int:
@@ -121,6 +133,19 @@ def load_settings() -> Settings:
             max_audio_size_mb=int(os.getenv("MAX_AUDIO_SIZE_MB", "10")),
             max_urls_per_request=int(os.getenv("MAX_URLS_PER_REQUEST", "5")),
             debug=_flag(os.getenv("DEBUG")),
+            guardrails_enabled=_flag(os.getenv("GUARDRAILS_ENABLED"), True),
+            guardrail_injection_threshold=_threshold(
+                os.getenv("GUARDRAIL_INJECTION_THRESHOLD", "0.8")
+            ),
+            guardrail_timeout_seconds=float(
+                os.getenv("GUARDRAIL_TIMEOUT_SECONDS", "10")
+            ),
+            prompt_guard_model=os.getenv(
+                "PROMPT_GUARD_MODEL", "meta-llama/llama-prompt-guard-2-86m"
+            ).strip(),
+            safety_guard_model=os.getenv(
+                "SAFETY_GUARD_MODEL", "openai/gpt-oss-safeguard-20b"
+            ).strip(),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigurationError("Invalid Papeer configuration value.") from exc
